@@ -31,14 +31,23 @@ directory, using fresh cookies from the local Firefox profile by default.
 - Fresh cookies pulled from the home Firefox profile by default
   (`--cookies-from-browser firefox`).
 - Configurable download directory via a flag, defaulting to `~/Downloads`.
+- **Library view** of all files in the download directory (assumed to have been
+  produced by the tool). Rendered as a simple list with `[open]` (play/preview
+  inline in the browser) and `[download]` (save to the client device) buttons per
+  file -- plus `[delete]`. The motivating use case: submit a URL from a phone,
+  let the server fetch it with home cookies, then tap `[download]` on the
+  completed file to pull it onto the phone. See Sec. 6/7.
 
 **Non-goals**
 - Multi-user / auth / remote access. This is a local single-user tool bound to
   `127.0.0.1`. (See Sec. 9 Security.) Multi-*session*/multi-tab is supported and
-  is a first-class goal above; multi-*user* is not.
-- A media library or post-download management UI. (Queue *does* persist
-  across restarts -- see Sec. 8 -- so a restart no longer drops pending/active
-  items.)
+  is a first-class goal above; multi-*user* is not. Mobile/phone use is
+  supported but expects the operator to reach the loopback server via a tunnel
+  (Tailscale / SSH port-forward) or to opt into `--bind-all` (Sec. 9).
+- A rich media library (transcoding, tagging, search, thumbnails). The library
+  is a flat file list with open/download/delete; no metadata DB. (Queue *does*
+  persist across restarts -- see Sec. 8 -- so a restart no longer drops
+  pending/active items.)
 - Supporting browsers/cookie stores other than Firefox *by default* (a flag
   can override, but Firefox is the blessed path).
 
@@ -214,12 +223,15 @@ would otherwise re-render the status fragment on every tick.
 ## 6. Request flow & htmx wiring
 
 ```
-GET  /            -> index.html (static: textarea form + live output pane)
+GET  /            -> index.html (static: textarea form + live output pane + library)
 GET  /static/*    -> embedded htmx.js, sse ext, css
 POST /download    -> append URLs to global queue; return ack fragment
 POST /cancel/:id  -> cancel the active (or pending) queue item
 POST /retry/:id   -> re-enqueue a cancelled/failed item at the back
 POST /clear       -> drop all done/failed/cancelled items from the queue
+GET  /library     -> render the current file list as an HTML fragment (htmx)
+GET  /file/:name  -> stream a file from the download dir (inline or attachment)
+POST /delete/:name -> delete a file from the download dir
 GET  /events      -> long-lived global SSE: snapshot on connect, then live updates
 ```
 
@@ -266,6 +278,39 @@ Removes all `Done`, `Failed`, and `Cancelled` items from `items` (pending +
 active are always retained), then emits a `queue` event. Returns an ack
 fragment like `<span id="ack">cleared 12 items</span>`.
 
+### GET /library
+Scans `cfg.download_dir` for regular files (non-recursive; subdirectories are
+ignored) and renders an HTML fragment `<div id="library">...</div>` listing
+them -- one row per file with name, size (human-readable), and mtime, plus
+`[open]`, `[download]`, and `[delete]` controls. Returned as a fragment so it can
+be swapped in by htmx on demand (the `[refresh]` button) or by a `library` SSE
+event. The library is deliberately decoupled from `queue.json`: it reflects
+*what exists on disk*, not *what was queued*, so files added or removed
+out-of-band simply show up / disappear on the next scan. (See Sec. 11 for the
+consequent drift.)
+
+### GET /file/:name
+Streams the named file from `cfg.download_dir`. `:name` must be a **bare
+filename** (no `/`, no `..`); the path is `download_dir.join(name)`,
+canonicalized, and asserted to still live under `download_dir` -- otherwise
+404 (never an error that leaks whether a path outside the dir exists).
+
+- Default (`?download=1` or the `[download]` button): `Content-Disposition:
+  attachment; filename="<name>"` -- the browser saves it to the device (the
+  mobile use case).
+- `?inline=1` (or the `[open]` link): `Content-Disposition: inline` -- the
+  browser plays/opens it in-tab.
+
+Files are streamed with `Content-Length`/range support where practical (axum +
+`tokio::fs`); large video files must not be buffered whole in memory.
+
+### POST /delete/:name
+Deletes the named file from `cfg.download_dir` (same path-traversal guard as
+`/file/:name`), then emits a `library` event so every tab's list refreshes.
+Returns a small ack fragment. **Irreversible** -- there is no trash/undo; the
+client renders a `confirm("Delete <name>?")` guard via `hx-on::before-request`
+before the POST fires. (See Sec. 9.)
+
 ### The output pane (in index.html)
 
 `index.html` ships with the output pane already present and already wired to
@@ -279,6 +324,7 @@ POST /download to "start" the stream:
   <div id="log">
     <div sse-swap="log" hx-swap="beforeend"></div>
   </div>
+  <div id="library" sse-swap="library" hx-swap="innerHTML"></div>
 </div>
 ```
 
@@ -287,9 +333,10 @@ POST /download to "start" the stream:
   stream), one per connected tab. The connection is **global and app-lifetime**:
   not tied to any one item, and not closed when an item finishes.
 - On connect, emit a `snapshot` event carrying the full current state -- the
-  entire queue (pending + active + recent done/failed; see Sec. 8) and the ring
-  buffer of recent log lines -- so a freshly opened or reconnected tab is
-  immediately consistent with every other tab.
+  entire queue (pending + active + recent done/failed; see Sec. 8), the ring
+  buffer of recent log lines, **and the current library file list** -- so a
+  freshly opened or reconnected tab is immediately consistent with every other
+  tab.
 - Thereafter emit named events whose payloads are **HTML fragments**:
   - `status` -> a fresh `<div id="status">...progress bar...</div>` (replaces)
     for the active item; an idle "queue empty / waiting" status when the worker
@@ -297,6 +344,10 @@ POST /download to "start" the stream:
   - `log` -> a `<div class="logline">...escaped text...</div>` (appended).
   - `queue` -> the full queue list `<div id="queue">...</div>` (replaces),
     emitted on queue changes (items enqueued, item starts, item finishes).
+  - `library` -> the full file list `<div id="library">...</div>` (replaces),
+    emitted when a download finishes (new file appears) or a file is deleted.
+    On a `finished` item the worker emits this alongside the final `queue`/
+    `status` so the new file is immediately downloadable from any tab.
 - Every fragment is HTML-escaped server-side (log lines especially -- they come
   from yt-dlp and may contain `&`, `<`, quotes).
 - There is no per-job `done` event that closes the connection; per-item
@@ -334,12 +385,19 @@ Single page, vertically stacked:
 |   ~ video2.webm (downloading)   [cancel]      |
 |   . https://.../video3         (pending)      |
 |   x video4.webm (failed)       [retry]        |
+|   v video5.webm (done)          [download]    |  <- done row carries a file link
 |                                  [ clear ]     |
 |                                               |
 | log:                                          |  <- #log (scrollback)
 | [youtube] Extracting URL: ...                   |
 | [download] Destination: video1.webm          |
 | WARNING: ...                                    |
+|                                               |
+| library (12 files):                 [refresh]  |  <- #library
+|   video1.webm   42 MiB   2026-07-11             |
+|                [open]   [download]   [delete]  |
+|   talk.mp4     120 MiB  2026-07-10            |
+|                [open]   [download]   [delete]  |
 +----------------------------------------------+
 ```
 
@@ -353,16 +411,24 @@ Single page, vertically stacked:
   for the brief in-flight POST itself (re-enabled the instant the ack returns).
 - Queue rows carry small action buttons rendered by the `queue` fragment:
   `[cancel]` on the active (and pending) item, `[retry]` on failed/cancelled
-  items, and a single `[ clear ]` button below the list that posts to
-  `/clear`. Each button is an `hx-post` that targets the ack span near the
-  submit button; the resulting state change arrives over SSE as a `queue` swap.
+  items, a `[download]` link on `done` rows (pointing at `/file/:name?download=1`,
+  so the just-finished file is one tap away on mobile), and a single
+  `[ clear ]` button below the list that posts to `/clear`. Each button is an
+  `hx-post`/link that targets the ack span near the submit button; the
+  resulting state change arrives over SSE as a `queue` swap.
 - A pending item displays its **URL** as its label until yt-dlp emits a
   `Destination:` (or a `filename` appears in the progress JSON); only the
   active item resolves to a real filename. This is why the mockup shows
   `video3` as a bare URL while the active row shows `video2.webm`.
-- A second tab opened against the same server renders the identical queue and
-  active status (via the `snapshot` event on SSE connect); both tabs stay in
-  lockstep via the same global event stream.
+- A second tab opened against the same server renders the identical queue,
+  active status, and library (via the `snapshot` event on SSE connect); all tabs
+  stay in lockstep via the same global event stream.
+- `#library` rows: `[open]` links to `/file/:name?inline=1` (browser plays/
+  opens in-tab), `[download]` links to `/file/:name?download=1` (saves to the
+  device -- the mobile use case), `[delete]` is an `hx-post` to
+  `/delete/:name` guarded by a client-side `confirm()`. A `[refresh]` button
+  above the list does an `hx-get="/library"` swap for a manual re-scan (e.g.
+  after dropping a file in via the file manager).
 
 ---
 
@@ -515,14 +581,27 @@ item and shutting the server down share one code path.
 
 - **Bind loopback only by default.** `--bind-all` exists but prints a loud
   warning. Anyone who can reach the server can run `yt-dlp` against arbitrary
-  URLs (limited to what `--cookies-from-browser firefox` allows) and read live
-  download status -- i.e. effectively act as your Firefox session for these
-  sites. Do not expose to a network.
+  URLs (limited to what `--cookies-from-browser firefox` allows), read live
+  download status, **download any file in your download dir to their device,
+  and delete files** (see `/file/:name`, `/delete/:name` below) -- i.e.
+  effectively act as your Firefox session for these sites *and* as a file
+  server for that directory. Do not expose to a network. **Mobile use**
+  requires reaching the loopback server: prefer a tunnel (Tailscale / SSH
+  port-forward) so the surface stays authenticated/encrypted; `--bind-all` is
+  the escape hatch and prints its warning at startup.
 - **No shell.** URLs are `Command::arg`s, never concatenated into a shell
   string -> no command injection.
 - **HTML-escape every fragment** sent over SSE; log lines are untrusted text.
-- **No arbitrary file traversal**: `--download-dir` is a CLI flag set by the
-  operator, not the browser. The browser only chooses URLs.
+- **Path traversal guarded, not absent.** `/file/:name` and `/delete/:name`
+  *do* let the browser name a file, but `:name` must be a bare filename (no `/`,
+  no `..`); the resolved path is canonicalized and asserted to remain inside
+  `cfg.download_dir`, otherwise 404. The browser cannot escape the download
+  directory -- only read/delete files already within it. `--download-dir`
+  itself remains a CLI flag set by the operator.
+- **Delete is irreversible.** `/delete/:name` removes the file from disk with
+  no trash/undo; the UI guards with a `confirm()` but the server performs the
+  removal immediately. This is acceptable for a single-user loopback tool and
+  is the reason reaching the server is treated as full trust above.
 - Cookies never leave the machine; yt-dlp reads them locally.
 
 ---
@@ -538,6 +617,7 @@ web-dl/
 |   +-- config.rs         // Config, defaults (~ expansion, addr, browser)
 |   +-- state.rs          // AppState, Queue, QueueItem, ItemStatus
 |   +-- persist.rs        // load/save queue.json (atomic write, restart requeue)
+|   +-- library.rs        // scan download_dir, serve /file/:name, /delete/:name
 |   +-- worker.rs         // single background worker loop (drain queue, run yt-dlp)
 |   +-- server.rs         // axum routes: / , /static, /download, /events
 |   +-- ytdlp.rs          // build Command, spawn, line reader, parse
@@ -602,4 +682,25 @@ Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
   file and the download directory can drift if a `done` item's file is deleted
   out-of-band -- persistence tracks *what was queued*, not *what exists on disk*;
   re-running a `done` item is a `[ retry ]` (re-download), not a verify.
-```
+- **Library vs. queue drift.** The library scans the directory; the queue
+  tracks jobs. They are intentionally decoupled, so a `done` queue item whose
+  file was deleted (or a file dropped in by hand) shows up inconsistently
+  between the two views. This is accepted: the library is the source of truth
+  for *what's on disk*, the queue for *what happened*. A `[ retry ]` on a `done`
+  item re-downloads (overwriting); it is not a "the file is missing" detector.
+- **Library scan cost.** A non-recursive `read_dir` of `~/Downloads` per
+  `library` event + on every SSE connect. For a personal download dir this is
+  cheap (tens of files), but a directory with thousands of unrelated files would
+  bloat the snapshot payload and the `#library` fragment. Mitigation: cap the
+  list (e.g. 200 most-recent by mtime) and note truncation, or scope the
+  download dir to a dedicated subdirectory rather than a shared `~/Downloads`.
+  If the operator points `--download-dir` at a giant dir, that's their choice.
+- **Large file streaming over loopback/LAN.** `/file/:name` must stream
+  (`tokio::fs` + chunked/range response), never `read_to_end` -- a multi-GiB
+  video buffered into memory would OOM the server and stall every tab. Range
+  requests matter for mobile browsers that seek within a video before
+  committing to a full download.
+- **`confirm()` is the only delete guard.** There is no undo/trash; a misclick
+  + confirm deletes a real file. Acceptable for single-user loopback, but the
+  confirm dialog must name the file explicitly so the tap is deliberate on
+  mobile.
