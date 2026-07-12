@@ -23,8 +23,24 @@ PORT="${PORT:-18082}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${WEB_DL_BINARY:-$ROOT/target/release/web-dl}"
 
+# Wait for the server to accept connections on $1 (up to ~5s).
+wait_for_port() {
+  local port="$1"
+  for _ in $(seq 1 50); do
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$port/library" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$SRV" 2>/dev/null; then return 1; fi
+    sleep 0.1
+  done
+  return 1
+}
+
 WORK="$(mktemp -d -t web-dl-ep.XXXXXX)"
 DL="$WORK/dl"; STATE="$WORK/state"; mkdir -p "$DL" "$STATE"
+# Server self-terminates via --timeout after the assertions run, so the only
+# cleanup left is the tmpdir. (PIDS kept for the readiness-wait fallback.)
+PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -33,14 +49,19 @@ if [[ ! -x "$BIN" ]]; then
   (cd "$ROOT" && cargo build --release)
 fi
 
+# --timeout caps the server's lifetime so it self-terminates once the test is
+# done; we then `wait` on it for its exit status. A short readiness probe
+# replaces the old fixed `sleep 1.5`.
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-file "$STATE/queue.json" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
+  --timeout 20 \
   > "$WORK/server.log" 2>&1 &
 SRV=$!
 PIDS+=("$SRV")
-sleep 1.5
-if ! kill -0 "$SRV" 2>/dev/null; then echo "FATAL: server failed to start"; cat "$WORK/server.log"; exit 1; fi
+if ! wait_for_port "$PORT"; then
+  echo "FATAL: server failed to start"; cat "$WORK/server.log"; exit 1
+fi
 
 base="http://127.0.0.1:$PORT"
 fail=0
@@ -117,7 +138,12 @@ echo "delete ack: $ack"
 [[ -e "$DL/sample.mp4" ]] && { echo "FAIL: file still exists after delete"; fail=1; } || echo "ok   deleted"
 
 echo
+if [[ $fail -eq 0 ]]; then echo "PASS"; else echo "FAIL"; fi
+
+# Let the --timeout expire / server exit on its own, surfacing its log.
+wait "$SRV" 2>/dev/null || true
+echo
 echo "=== server log ==="
 cat "$WORK/server.log"
 echo
-if [[ $fail -eq 0 ]]; then echo "PASS"; else echo "FAIL"; exit 1; fi
+exit $fail

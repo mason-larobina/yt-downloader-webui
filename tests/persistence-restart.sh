@@ -34,20 +34,40 @@ if [[ ! -x "$BIN" ]]; then
   (cd "$ROOT" && cargo build --release)
 fi
 
-start_server() {  # $1 = log file suffix
+# Wait for the server to accept connections on $PORT (up to ~5s).
+wait_for_port() {
+  local pid="$1"
+  for _ in $(seq 1 50); do
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/library" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then return 1; fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# $1 = log file suffix, $2 = --timeout seconds (optional; when given the server
+# self-terminates instead of needing an external kill).
+start_server() {
   local log="$WORK/server.$1.log"
-  HOME="$WORK" "$BIN" \
-    --download-dir "$DL" --state-file "$STATE/queue.json" \
-    --cookies-from-browser none --bind "127.0.0.1:$PORT" \
-    > "$log" 2>&1 &
+  local args=(
+    --download-dir "$DL" --state-file "$STATE/queue.json"
+    --cookies-from-browser none --bind "127.0.0.1:$PORT"
+  )
+  [[ -n "${2:-}" ]] && args+=(--timeout "$2")
+  HOME="$WORK" "$BIN" "${args[@]}" > "$log" 2>&1 &
   local pid=$!
   PIDS+=("$pid")
-  sleep 1.5
-  if ! kill -0 "$pid" 2>/dev/null; then echo "FATAL: server failed to start"; cat "$log"; exit 1; fi
+  if ! wait_for_port "$pid"; then
+    echo "FATAL: server failed to start"; cat "$log"; exit 1
+  fi
   echo "$pid"
 }
 
 echo "=== launch #1, queue a download, SIGTERM mid-flight ==="
+# Server #1 is deliberately NOT given --timeout: the whole point of this test
+# is that SIGTERM mid-flight exercises the graceful-shutdown path.
 SRV1=$(start_server 1)
 curl -s -X POST "http://127.0.0.1:$PORT/download" --data-urlencode "urls=$URL" >/dev/null
 echo "queued; waiting 2s for it to go active..."
@@ -72,7 +92,9 @@ sys.exit(0 if all(i['status']!='active' for i in d['items']) else 1)
 
 echo
 echo "=== launch #2 (restart): pending item should be re-started automatically ==="
-SRV2=$(start_server 2)
+# Server #2 self-terminates via --timeout just past the SSE capture window so
+# the run isn't left backgrounded even if the download hangs.
+SRV2=$(start_server 2 105)
 echo "=== startup log (expect: 'loaded queue: 1 items, 1 pending' + 'will be re-started') ==="
 cat "$WORK/server.2.log"
 
@@ -81,6 +103,8 @@ nohup timeout 90 curl -sN "http://127.0.0.1:$PORT/events" > "$WORK/sse.raw" 2>/d
 SSE=$!
 PIDS+=("$SSE")
 wait "$SSE" || true
+# Let server #2 self-terminate via --timeout so the run isn't left backgrounded.
+wait "$SRV2" 2>/dev/null || true
 
 echo "=== final queue event (expect 'row done') ==="
 awk '/^event: queue$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \

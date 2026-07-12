@@ -36,15 +36,24 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 echo "=== starting server on 127.0.0.1:$PORT ==="
+# --timeout caps the server's lifetime just past the SSE capture window so it
+# self-terminates even if the test hangs; we `wait` on it for its exit status.
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-file "$STATE/queue.json" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
+  --timeout $((TIMEOUT + 15)) \
   > "$WORK/server.log" 2>&1 &
 SRV=$!
-# shellcheck disable=SC2064
-trap "kill '$SRV' 2>/dev/null || true; rm -rf '$WORK'" EXIT
-sleep 1.5
-if ! kill -0 "$SRV" 2>/dev/null; then
+# No kill trap: the server self-terminates via --timeout. tmpdir still cleaned.
+wait_for_port() {
+  for _ in $(seq 1 50); do
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/library" >/dev/null 2>&1; then return 0; fi
+    if ! kill -0 "$SRV" 2>/dev/null; then return 1; fi
+    sleep 0.1
+  done
+  return 1
+}
+if ! wait_for_port; then
   echo "FATAL: server failed to start"; cat "$WORK/server.log"; exit 1
 fi
 echo "server pid $SRV"
@@ -60,6 +69,10 @@ curl -s -X POST "http://127.0.0.1:$PORT/download" --data-urlencode "urls=$URL"
 echo " <- ack"
 
 wait "$SSE" || true
+
+# Wait for the server to self-terminate (its --timeout has expired by now) so
+# the run isn't left backgrounded and the queue flush lands before we read it.
+wait "$SRV" 2>/dev/null || true
 
 echo
 echo "=== event counts ==="
