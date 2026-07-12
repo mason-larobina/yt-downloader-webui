@@ -17,12 +17,19 @@ directory, using fresh cookies from the local Firefox profile by default.
 - Single self-contained binary; all HTML/CSS/JS/templates embedded (no
   external file dependencies at runtime, no CDN).
 - Frontend uses **htmx** (plus the htmx SSE extension for live output).
-- One large textarea; paste N line-separated URLs; each URL is **appended to
-  a global queue** (in-memory at runtime, **persisted to a simple JSON file** so
-  it survives restarts -- see Sec. 8). A single background worker drains the
-  queue **one URL at a time**, spawning one `yt-dlp` process per item. There is
-  only ever one yt-dlp process running at any moment; submitting while a
-  download is in flight never rejects -- it just enqueues.
+- One large textarea; paste N line-separated URLs. Each pasted URL is
+  **probed synchronously** in the request handler with `yt-dlp --flat-playlist
+  -j` (fast: extraction only, no download). A **playlist** is expanded into its
+  per-video entries and returned to the user as a list of N files **to approve**
+  (checkboxes, approve a subset); a **single video** is enqueued for download
+  directly. Only approved per-video items (and directly-queued single videos)
+  are **appended to a global queue** and **persisted to a simple JSON file** so
+  they survive restarts (see Sec. 8) -- **playlists are never persisted**: their
+  expansion lives only in the request that produced it. A single background
+  worker drains the queue **one URL at a time**, spawning one `yt-dlp` process
+  per item. There is only ever one yt-dlp *download* running at any moment
+  (a probe may run concurrently in a request handler -- it writes no files);
+  submitting while a download is in flight never rejects -- it just enqueues.
 - **Queue and live status are global and shared across all sessions/tabs.**
   Every connected browser sees the same queue and the same active-item
   progress. Still single-user, no auth (see Sec. 9).
@@ -218,6 +225,13 @@ classified:
 | Progress `status == "error"`                           | Mark active item x, surface error in log; worker pops next. |
 | Anything else (stderr `WARNING:`/`ERROR:` included)   | **Log event** -> append to scrollback + ring buffer. |
 
+This classifier is the **download** path (the worker). The synchronous
+**probe** in `POST /download` (Sec. 6) reuses the same line reader but treats
+a JSON object without `status` as a `--flat-playlist -j` entry (a playlist
+entry `_type:"url"` or a single-video dict) rather than a log line; probe log
+lines are not broadcast to the global ring/SSE -- only the probe's outcome
+returns to the caller.
+
 The server owns the queue (ids, ordering, per-item state); yt-dlp output only
 updates the *active* item. Progress JSON is the source of truth for the active
 item's percent/speed/ETA; plain-text log lines populate the scrollback and the
@@ -237,7 +251,8 @@ would otherwise re-render the status fragment on every tick.
 ```
 GET  /            -> index.html (static: textarea form + live output pane + library)
 GET  /static/*    -> embedded htmx.js, sse ext, css
-POST /download    -> append URLs to global queue; return ack fragment
+POST /download    -> probe each URL; enqueue single videos; return playlist approval list
+POST /approve     -> enqueue the per-video items the user ticked in an approval list
 POST /cancel/:id  -> cancel the active (or pending) queue item
 POST /retry/:id   -> re-enqueue a cancelled/failed item at the back
 POST /clear       -> drop all done/failed/cancelled items from the queue
@@ -250,17 +265,48 @@ GET  /events      -> long-lived global SSE: snapshot on connect, then live updat
 ### POST /download
 1. Parse form body (`application/x-www-form-urlencoded`): the `urls` textarea.
 2. Split on newlines, trim, drop blanks -> `Vec<String>` of URLs.
-3. If empty -> return a small "paste at least one URL" ack fragment.
-4. Otherwise: assign each URL a fresh id, append the items to the global queue
-   (status = pending) under the queue lock, notify the worker, and return a
-   small ack fragment (e.g. `<span id="ack">added 3 to queue</span>`) swapped
-   near the submit button.
+3. If empty -> return a small "paste at least one URL" fragment into `#approve`.
+4. Otherwise, for **each** URL, run `worker::probe`: spawn
+   `yt-dlp --flat-playlist -j` (no `-P`, no `--progress-template`; it writes no
+   files), read stdout/stderr line-by-line (bounded by a 60 s timeout; the
+   child is `kill_on_drop`, so a cancelled request or server shutdown kills it),
+   and classify the result:
+   - **playlist** (`_type:"url"` entries) -> collect the entries (each entry's
+     `url` is already the full per-video watch URL); these are presented for
+     approval, **not** enqueued yet and **never persisted**;
+   - **single video** (a full video dict, no entries) -> enqueue the *original*
+     submitted URL directly as a pending per-video item, borrowing only
+     `title`/`duration` from the probe (the dict's `url` is a media URL);
+   - **error / empty** -> record the per-URL error (last `ERROR:` line or exit
+     status).
+5. After all URLs are probed:
+   - if any playlists were found -> return `render::render_approval(...)`
+     (a form of checkboxes, checked by default, each carrying a JSON
+     `{url,title,duration}` `value`) swapped into `#approve`. If single videos
+     were also queued directly (or some URLs errored), a note line above the
+     list names them;
+   - else if only single videos -> return an ack `<span class="ack">queued N
+     download(s)</span>` into `#approve`;
+   - else -> return the first error into `#approve`.
+6. Any directly-enqueued single videos notify the worker, emit a `queue` event,
+   and persist (per Sec. 8) **before** the response is returned.
 
-This handler never spawns yt-dlp and never rejects -- the background worker is
-the only thing that runs yt-dlp. The textarea is cleared on success so the user
-can paste the next batch. The real queue/status updates arrive over the SSE
-connection the page opened on load (see GET /events); POST /download does not
-touch that connection.
+The probe runs **concurrently with the worker's downloads** (it is a separate,
+   lightweight extraction process) and is private to the request: its log lines
+   are not broadcast to the global ring/SSE -- only its outcome (ack or
+   approval list) returns to the caller. The textarea is cleared on success.
+Real queue/status updates still arrive over the SSE connection the page opened
+on load (see GET /events); POST /download does not touch that connection.
+
+### POST /approve
+Receives the repeated `entry` checkbox values from an approval-list form (each
+the JSON `{url,title,duration}` baked in by `render::render_approval`),
+deserialises each, and appends a pending per-video `Video` item per checked
+entry under the queue lock. Notifies the worker, emits a `queue` event,
+persists, and returns an ack `<span class="ack">queued N download(s)</span>`
+into `#approve` (replacing the approval list). An empty submission (no box
+checked) is rejected with "select at least one video". This is the only path
+by which playlist entries reach the (persisted) queue.
 
 ### POST /cancel/:id
 Cancels the queue item with the given id. Behaviour depends on status:
@@ -387,6 +433,11 @@ Single page, vertically stacked:
 | |                                          | |
 | +------------------------------------------+ |
 |                                  [ Download ] |  <- submit (hx-post /download)
+| playlist: Chill (3 of 70 shown)               |  <- #approve (only for playlists)
+| [x] 1. YAMATOMAYA #6 ...   1:00:23            |
+| [x] 2. ...                                    |
+| [ ] 3. ...                       [ Download   |
+|                                    selected ] |
 +----------------------------------------------+
 | Now downloading: video1.webm                  |  <- #status (live progress bar)
 | [##########----------] 73% | 2.1 MiB/s |     |
@@ -418,9 +469,21 @@ Single page, vertically stacked:
 - `#log` is a scrollable `<pre>`-styled region; new lines appended at bottom;
   auto-scroll to bottom unless the user has scrolled up (simple: always
   auto-scroll for v1; an `hx-on`-ish scroll guard can come later).
-- The submit button is always enabled -- POST /download just appends to the
-  queue, so there is nothing to "wait out". htmx `hx-disabled-elt` is used only
-  for the brief in-flight POST itself (re-enabled the instant the ack returns).
+- The submit button is always enabled -- POST /download probes the pasted
+  URLs (a few seconds at most for `--flat-playlist -j`; bounded by a 60 s
+  timeout) and never rejects on a busy queue, since the probe runs concurrently
+  with the worker's downloads. htmx `hx-disabled-elt` disables the button only
+  for the in-flight POST (re-enabled the instant the ack / approval list
+  returns). The response swaps into a `#approve` region below the form: an ack
+  for single videos (already queued), or a checklist form for a playlist.
+- **Approval list** (`#approve`): for a playlist the probe returns one row per
+  entry -- title, duration, and a checkbox (checked by default) whose `value`
+  is a JSON `{url,title,duration}` blob. A `Download selected (N)` button
+  `hx-post`s the form to `/approve`, which enqueues one per-video item per
+  checked box and replaces the list with an ack. A tiny delegated listener
+  keeps `N` in sync with the checked count. The list is transient -- never
+  persisted, never broadcast over SSE; other tabs only see the resulting queue
+  items once approved.
 - Queue rows carry small action buttons rendered by the `queue` fragment:
   `[cancel]` on the active (and pending) item, `[retry]` on failed/cancelled
   items, a `[download]` link on `done` rows (pointing at `/file/:name?download=1`,
@@ -428,10 +491,11 @@ Single page, vertically stacked:
   `[ clear ]` button below the list that posts to `/clear`. Each button is an
   `hx-post`/link that targets the ack span near the submit button; the
   resulting state change arrives over SSE as a `queue` swap.
-- A pending item displays its **URL** as its label until yt-dlp emits a
-  `Destination:` (or a `filename` appears in the progress JSON); only the
-  active item resolves to a real filename. This is why the mockup shows
-  `video3` as a bare URL while the active row shows `video2.webm`.
+- A pending item displays its **title** (from the probe) as its label, falling
+  back to its URL, until yt-dlp emits a `Destination:` (or a `filename` appears
+  in the progress JSON); only the active item resolves to a real filename. This
+  is why the mockup shows `video3` as a bare URL while the active row shows
+  `video2.webm`.
 - A second tab opened against the same server renders the identical queue,
   active status, and library (via the `snapshot` event on SSE connect); all tabs
   stay in lockstep via the same global event stream.
@@ -464,6 +528,8 @@ struct QueueItem {
     id: u64,
     url: String,
     status: ItemStatus,       // Pending | Active | Done | Failed | Cancelled
+    title: Option<String>,      // from the probe; row label before a filename resolves
+    duration: Option<f64>,      // from the probe; display only
     filename: Option<String>,
     progress: Option<Progress>, // percent/speed/eta/bytes from progress JSON
     error: Option<String>,
@@ -473,6 +539,13 @@ struct QueueItem {
 
 enum ItemStatus { Pending, Active, Done, Failed, Cancelled }
 ```
+
+Every `QueueItem` is a **per-video download** (the only kind persisted). There
+is no `Probe` item kind: playlist classification happens synchronously in
+`POST /download` (Sec. 6) and is presented for approval before anything is
+queued, so a playlist URL never occupies a queue slot. `title`/`duration` are
+borrowed from that probe so pending per-video rows show a readable label
+instead of a bare watch URL.
 
 The `broadcast::Sender<Event>` is created once at startup and lives for the
 whole app -- it is **not** per-job. Every `/events` client holds a
@@ -485,11 +558,13 @@ A single worker task is spawned at startup. Its loop:
 
 1. Lock the queue; if there is a pending item, flip it to `Active`, mint a
    `CancellationToken`, stash it on the item, and take it; otherwise drop the
-   lock and `notify.notified().await` until POST /download wakes it.
-2. Spawn `yt-dlp` for that one URL. Read stdout/stderr line-by-line **raced**
-   against `cancel.cancelled()` via `tokio::select!`, classify (Sec. 5), update
-   the active `QueueItem` under the lock, push log lines into `log_ring`, and
-   `events.send(...)` the throttled `status`/`log`/`queue` fragments.
+   lock and `notify.notified().await` until POST /download or POST /approve
+   wakes it.
+2. Spawn `yt-dlp` (the *download* command) for that one URL. Read
+   stdout/stderr line-by-line **raced** against `cancel.cancelled()` via
+   `tokio::select!`, classify (Sec. 5), update the active `QueueItem` under
+   the lock, push log lines into `log_ring`, and `events.send(...)` the
+   throttled `status`/`log`/`queue` fragments.
    - On `cancel.cancelled()`: `child.kill().await`, drain any buffered output,
      mark the item `Cancelled`, emit a final `status` + `queue` event.
    - On clean exit (`status == "finished"` / exit code 0): mark `Done`.
@@ -498,10 +573,13 @@ A single worker task is spawned at startup. Its loop:
 3. Clear the item's `cancel` token, emit a final `queue` (and final `status`)
    event, then loop to step 1.
 
-Because only the worker ever spawns (or kills) yt-dlp, there is only ever one
-live process. Concurrent POST /download handlers only mutate the queue and
-`notify`; POST /cancel only trips a `CancellationToken`; POST /retry only
-rewrites an item's status; POST /clear only drains terminal items.
+Because only the worker ever spawns (or kills) a *download* yt-dlp, there is
+only ever one live download process. (The synchronous probe in POST /download
+is a separate, file-less extraction that may run concurrently with a download;
+it is `kill_on_drop` and bounded by a 60 s timeout.) Concurrent POST /download
+and POST /approve handlers only mutate the queue and `notify`; POST /cancel
+only trips a `CancellationToken`; POST /retry only rewrites an item's status;
+POST /clear only drains terminal items.
 
 Done/failed/cancelled items are kept in `items` (capped -- e.g. last 200) so the
 queue view shows recent history; pending + active are always retained. The
@@ -517,24 +595,32 @@ a file with that timestamp already exists the filename timestamp is
 **numerically incremented** (`<ts>.json`, `<ts+1>.json`, ...) until a free slot
 is found -- so two URLs enqueued in the same second get distinct, contiguous
 filenames and FIFO ordering by filename equals FIFO by enqueue time. The
-serialized form of each file is a thin, stable projection of one item:
+serialized form of each file is a thin, stable projection of one **per-video**
+item:
 
 ```json
 {
   "version": 1,
-  "next_id": 42,
-  "items": [
-    { "id": 7, "url": "https://...",
-    "status": "pending",
-    "filename": null,
-    "error": null,
-    "enqueued_at": "2026-07-11T22:54:01Z" }
+  "id": 7,
+  "url": "https://www.youtube.com/watch?v=...",
+  "status": "pending",
+  "title": "Some Talk",
+  "duration": 3623.0,
+  "filename": null,
+  "error": null,
+  "enqueued_at": "2026-07-11T22:54:01Z"
+}
 ```
 
 File `1720731241.json` would be the item above; a second URL enqueued in the
 same second lands in `1720731242.json`, and so on. `progress` and `cancel` are
 **runtime-only** and never serialized; on restart `progress` is `None` until
-the worker re-runs the item.
+the worker re-runs the item. **Playlists are never persisted** -- their
+expansion lives only in the `POST /download` request that produced it; only
+the per-video items the user actually approves (or single videos enqueued
+directly) ever reach the state dir. A crash mid-probe simply loses the
+approval list (the user re-pastes); it cannot leave half-expanded playlist
+items behind, because none were written.
 
 **Write strategy.** The state dir is reconciled on every *structural* queue
 mutation -- enqueue, status transition (start/finish/fail/cancel), retry,
@@ -636,8 +722,8 @@ web-dl/
 |   +-- state.rs          // AppState, Queue, QueueItem, ItemStatus
 |   +-- persist.rs        // load/save one <ts>.json per item (reconcile dir, restart requeue)
 |   +-- library.rs        // scan download_dir, serve /file/:name, /delete/:name
-|   +-- worker.rs         // single background worker loop (drain queue, run yt-dlp)
-|   +-- server.rs         // axum routes: / , /static, /download, /events
+|   +-- worker.rs         // single background worker (drain queue, run yt-dlp downloads) + pub probe()
+|   +-- server.rs         // axum routes: / , /static, /download, /approve, /cancel, /retry, /clear, /events
 |   +-- ytdlp.rs          // build Command, spawn, line reader, parse
 |   +-- parse.rs          // classify lines -> Event (progress / log)
 |   +-- render.rs         // Event -> HTML fragment (escape, progress bar, queue)
@@ -685,6 +771,20 @@ Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
   worker `select!` branch `child.kill()`s the process. Pending items are removed
   straight from the queue without involving the worker. `[ retry ]` re-enqueues
   a cancelled/failed item at the back; `[ clear ]` drops terminal items.
+- **Synchronous probe in POST /download.** The handler spawns `yt-dlp
+  --flat-playlist -j` per pasted URL, so the POST blocks until extraction
+  finishes (a few seconds; bounded by a 60 s timeout, after which the child is
+  killed and an error fragment returned). The probe is `kill_on_drop`, so a
+  dropped request (client gone, server shutdown) reaps the child automatically.
+  It runs concurrently with the worker's download (relaxing "one yt-dlp
+  process" to "one yt-dlp *download*") -- safe because the probe writes no files
+  and emits no progress ticks. For a single (non-playlist) video the probe is a
+  full extraction, so a single-video paste costs one extraction here plus one at
+  download time; this is the same cost as the old probe-then-download path and
+  is accepted to avoid URL-shape guessing. The approval list itself is
+  transient: never persisted and never broadcast over SSE, so a crash or tab
+  close between probe and approve simply discards it (the user re-pastes); only
+  approved per-video items reach the queue.
 - **Persistence robustness.** Per-item writes are atomic (temp + fsync +
   rename), so a crash mid-write cannot corrupt that item's file -- the worst
   case is losing the last structural mutation to that one item (its previous

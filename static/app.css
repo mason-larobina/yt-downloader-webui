@@ -47,6 +47,23 @@ button.clear, button.refresh { background: #3a3a2b; border-color: #505034; }
 .ack { color: var(--muted); font-size: 13px; }
 .ack.err { color: var(--err); }
 
+.approve { margin-top: 10px; }
+.approve .ack { color: var(--ok); }
+.approve .err { color: var(--err); font-size: 13px; }
+.approvelist {
+  background: #23262c; border: 1px solid #2c2f36; border-radius: 6px;
+  padding: 8px 10px; max-height: 340px; overflow-y: auto;
+}
+.approvelist .ahead { color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+.approvelist .anote { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.approvelist .arow { padding: 3px 4px; border-radius: 4px; }
+.approvelist .arow:hover { background: var(--row-hover); }
+.approvelist .arow label { display: flex; align-items: baseline; gap: 6px; }
+.approvelist .arow .idx { color: var(--muted); font-family: monospace; font-size: 12px; min-width: 2em; }
+.approvelist .arow .title { font-size: 13px; word-break: break-all; flex: 1 1 auto; }
+.approvelist .arow .dur { color: var(--muted); font-size: 12px; font-family: monospace; }
+.approvelist .actions { margin-top: 8px; }
+
 .output { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
 
 .status {

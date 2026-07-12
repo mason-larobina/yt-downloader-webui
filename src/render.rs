@@ -1,8 +1,20 @@
 //! Render server-side HTML fragments for SSE events.
 use std::path::Path;
 
+use crate::parse::FlatEntry;
 use crate::state::{ItemStatus, Queue, QueueItem};
 use crate::library::LibraryFile;
+
+/// JSON shape embedded in each approval checkbox `value`, so POST /approve can
+/// reconstruct per-video items (with titles) without any server-side stash.
+/// The whole blob is HTML-escaped into the attribute; the browser decodes it
+/// back to this JSON on form submit.
+#[derive(serde::Serialize)]
+struct ApprovalEntry<'a> {
+    url: &'a str,
+    title: Option<&'a str>,
+    duration: Option<f64>,
+}
 
 /// HTML-escape untrusted text (log lines, URLs, filenames).
 pub fn esc(input: &str) -> String {
@@ -282,6 +294,69 @@ fn render_library_row(f: &LibraryFile) -> String {
     )
 }
 
+// ----------------------------- #approval ----------------------------------
+
+/// Render the approval list for a probed playlist: a form whose checkboxes
+/// (checked by default) carry each entry's url/title/duration as an
+/// HTML-escaped JSON `value`. POST /approve deserialises the checked values
+/// and enqueues one per-video `Video` item each. `note` is an optional line
+/// shown above the list (e.g. "1 single-video URL queued directly" or a
+/// per-URL probe error).
+///
+/// Never persisted: this fragment is a transient request-handler response.
+/// Only the approved per-video items that result from POST /approve reach the
+/// queue (and thus the state dir).
+pub fn render_approval(title: Option<&str>, entries: &[FlatEntry], note: Option<&str>) -> String {
+    let mut rows = String::new();
+    for (i, e) in entries.iter().enumerate() {
+        let url = e.url.as_deref().unwrap_or("");
+        let blob = serde_json::to_string(&ApprovalEntry {
+            url,
+            title: e.title.as_deref(),
+            duration: e.duration,
+        })
+        .unwrap_or_default();
+        let value = esc(&blob);
+        let label = esc(e.title.as_deref().unwrap_or(url));
+        let dur = human_duration(e.duration);
+        let idx = i + 1;
+        let dur_html = if dur.is_empty() {
+            String::new()
+        } else {
+            format!(r#" <span class="dur">{dur}</span>"#)
+        };
+        rows.push_str(&format!(
+            r##"<div class="arow"><label><input type="checkbox" name="entry" value="{value}" checked> <span class="idx">{idx}.</span> <span class="title">{label}</span>{dur_html}</label></div>"##,
+            value = value,
+            idx = idx,
+            label = label,
+            dur_html = dur_html,
+        ));
+    }
+
+    let n = entries.len();
+    let head = match title {
+        Some(t) => format!(
+            r##"<div class="ahead">playlist: {t} ({n} videos)</div>"##,
+            t = esc(t),
+            n = n
+        ),
+        None => format!(r##"<div class="ahead">playlist ({n} videos)</div>"##, n = n),
+    };
+    let note_html = match note {
+        Some(s) if !s.is_empty() => format!(r##"<div class="anote">{}</div>"##, esc(s)),
+        _ => String::new(),
+    };
+
+    format!(
+        r##"<form class="approvelist" hx-post="/approve" hx-target="#approve" hx-swap="innerHTML">{head}{note_html}<div class="arows">{rows}</div><div class="actions"><button type="submit">Download selected (<span class="sel-count">{n}</span>)</button></div></form>"##,
+        head = head,
+        note_html = note_html,
+        rows = rows,
+        n = n,
+    )
+}
+
 // ----------------------------- snapshots -----------------------------------
 
 /// Build the queue + log snapshot used by SSE on connect: returns the queue
@@ -296,5 +371,86 @@ pub fn render_library_scan(dir: &Path) -> String {
     match crate::library::scan(dir) {
         Ok(files) => render_library(&files),
         Err(_) => r#"<div id="library" class="library"><div class="err">failed to scan directory</div></div>"#.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use crate::parse::FlatEntry;
+
+    /// The checkbox `value` is an HTML-escaped JSON blob that POST /approve
+    /// must be able to deserialise back into `{url,title,duration}`. This
+    /// pins the contract between `render_approval` and `server::ApproveEntry`.
+    #[derive(serde::Deserialize)]
+    struct ApproveEntry {
+        url: String,
+        title: Option<String>,
+        duration: Option<f64>,
+    }
+
+    #[test]
+    fn approval_checkbox_values_round_trip() {
+        let entries = vec![
+            FlatEntry {
+                _type: Some("url".into()),
+                url: Some("https://www.youtube.com/watch?v=aaa".into()),
+                title: Some("First & <second> \"quoted\"".into()),
+                duration: Some(3623.0),
+                ..Default::default()
+            },
+            FlatEntry {
+                _type: Some("url".into()),
+                url: Some("https://www.youtube.com/watch?v=bbb".into()),
+                title: None,
+                duration: None,
+                ..Default::default()
+            },
+        ];
+        let html = render_approval(Some("Chill"), &entries, Some("1 single-video URL queued directly"));
+
+        // Form posts to /approve into #approve.
+        assert!(html.contains(r##"hx-post="/approve""##));
+        assert!(html.contains(r##"hx-target="#approve""##));
+        assert!(html.contains("playlist: Chill (2 videos)"));
+        assert!(html.contains("1 single-video URL queued directly"));
+
+        // Extract every checkbox value, HTML-unescape (as a browser would),
+        // and confirm each deserialises with title/duration intact -- including
+        // the entry whose title contains HTML-special chars (& < > ").
+        //
+        // `esc` turns every `"` in the JSON into `&quot;`, so the attribute
+        // value contains no raw `"`; it runs from `value="` to the next `"`.
+        let needle = r#"name="entry" value=""#;
+        let values: Vec<String> = html
+            .match_indices(needle)
+            .map(|(i, _)| {
+                let start = i + needle.len();
+                let rest = &html[start..];
+                let end = rest.find('"').unwrap_or(rest.len());
+                rest[..end].to_string()
+            })
+            .collect();
+        assert_eq!(values.len(), 2, "expected 2 checkboxes, got {values:?}");
+
+        // Browser decodes HTML entities in the attribute value before submit.
+        fn unescape(s: &str) -> String {
+            s.replace("&quot;", "\"")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&#39;", "'")
+        }
+        let first: ApproveEntry =
+            serde_json::from_str(&unescape(&values[0])).expect("first value decodes");
+        assert_eq!(first.url, "https://www.youtube.com/watch?v=aaa");
+        assert_eq!(first.title.as_deref(), Some(r#"First & <second> "quoted""#));
+        assert_eq!(first.duration, Some(3623.0));
+
+        let second: ApproveEntry =
+            serde_json::from_str(&unescape(&values[1])).expect("second value decodes");
+        assert_eq!(second.url, "https://www.youtube.com/watch?v=bbb");
+        assert!(second.title.is_none());
+        assert!(second.duration.is_none());
     }
 }

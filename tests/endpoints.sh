@@ -77,27 +77,52 @@ echo "=== POST /download with empty body ==="
 ack=$(curl -s -X POST "$base/download" --data-urlencode 'urls=')
 check "empty post" "paste at least one URL" "$ack"
 
-echo "=== POST /download with a failing URL (ERROR: capture) ==="
-curl -s -X POST "$base/download" --data-urlencode 'urls=https://www.youtube.com/watch?v=BaW_jenozKc' >/dev/null
-# wait for the worker to fail it
-for _ in $(seq 1 30); do
-  if curl -s "$base/library" >/dev/null 2>&1 && grep -q 'row failed' <(curl -s "$base/library" 2>/dev/null); then :; fi
-  # /library doesn't show queue; check the SSE stream instead.
-  break
-done
-# Capture a quick SSE snapshot to inspect the queue.
-timeout 3 curl -sN "$base/events" > "$WORK/sse.raw" 2>/dev/null || true
-if grep -q 'row failed' "$WORK/sse.raw" && grep -q 'Video unavailable' "$WORK/sse.raw"; then
-  echo "ok   failed item surfaces real ERROR message"
+echo "=== POST /download with a failing URL (probe error -> fragment, no queue item) ==="
+# A nonexistent YouTube video ID fails at probe time (extraction) deterministically,
+# with or without cookies -- yt-dlp prints `ERROR: [youtube] ...: Video unavailable`.
+# Under the new flow the probe runs in POST /download itself, so the ERROR is
+# returned as an error fragment into #approve and NOTHING is enqueued (a bad URL
+# no longer pollutes the queue / state dir).
+ack=$(curl -s -X POST "$base/download" --data-urlencode 'urls=https://www.youtube.com/watch?v=aaaaaaaaaaa')
+check "probe error fragment" 'class="err"' "$ack"
+check "probe error message" "Video unavailable" "$ack"
+# Confirm nothing was enqueued: a fresh SSE snapshot has no queue row.
+timeout 2 curl -sN "$base/events" > "$WORK/sse.raw" 2>/dev/null || true
+if grep -q 'class="row ' "$WORK/sse.raw"; then
+  echo "FAIL: a failing-URL probe should not enqueue an item"; fail=1
 else
-  echo "FAIL: failed item did not capture ERROR message"; fail=1
+  echo "ok   no item enqueued for failed probe"
 fi
-ITEM_ID=$(grep -oE 'retry/[0-9]+' "$WORK/sse.raw" | head -1 | grep -oE '[0-9]+')
+# The state dir should still be empty.
+if [[ -n "$(ls -A "$STATE" 2>/dev/null)" ]]; then
+  echo "FAIL: state dir should be empty after a failed probe"; fail=1
+else
+  echo "ok   state dir empty after failed probe"
+fi
 
-echo "=== POST /retry/$ITEM_ID ==="
+# retry needs a terminal (Failed/Cancelled) queue item. Under the new flow a
+# failing URL never queues, so create a Cancelled item by enqueuing a real
+# download and cancelling it while it is active, then retry that.
+ITEM_ID=""
+echo "=== enqueue a real download to cancel + retry ==="
+curl -s -X POST "$base/download" --data-urlencode 'urls=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4' >/dev/null
+# Stream SSE briefly, looking for a cancel button on an active row.
+timeout 8 curl -sN "$base/events" > "$WORK/sse.retry" 2>/dev/null || true
+ACTIVE_ID=$(grep -oE 'cancel/[0-9]+' "$WORK/sse.retry" | head -1 | grep -oE '[0-9]+')
+if [[ -n "$ACTIVE_ID" ]]; then
+  curl -s -X POST "$base/cancel/$ACTIVE_ID" >/dev/null
+  # Give the worker a moment to mark it Cancelled, then look for a retry button.
+  sleep 0.5
+  timeout 2 curl -sN "$base/events" > "$WORK/sse.retry2" 2>/dev/null || true
+  ITEM_ID=$(grep -oE 'retry/[0-9]+' "$WORK/sse.retry2" | head -1 | grep -oE '[0-9]+')
+fi
+
+echo "=== POST /retry/${ITEM_ID:-<none>} ==="
 if [[ -n "$ITEM_ID" ]]; then
   ack=$(curl -s -X POST "$base/retry/$ITEM_ID")
   check "retry ack" "requeued item $ITEM_ID" "$ack"
+else
+  echo "SKIP retry: the download finished before we could cancel it (try a slower URL)"
 fi
 
 echo "=== POST /clear ==="

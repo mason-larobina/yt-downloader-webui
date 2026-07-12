@@ -8,9 +8,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::Event;
-use crate::parse::{ParsedLine, parse_flat_line, parse_line};
+use crate::parse::{FlatEntry, ParsedLine, parse_flat_line, parse_line};
 use crate::render;
-use crate::state::{AppState, ItemKind, ItemStatus, QueueItem};
+use crate::state::{AppState, ItemStatus};
 use crate::ytdlp;
 
 /// Throttle: emit status at most every this long, except always emit final.
@@ -47,8 +47,9 @@ async fn run(state: Arc<AppState>) {
             }
         };
 
-        // 2. Run yt-dlp for this one item.
-        run_item(&state, item).await;
+        // 2. Download this item (the probe is now done synchronously in the
+        //    POST /download handler -- the worker only ever downloads).
+        run_download(&state, item).await;
     }
     tracing::info!("worker exiting");
 }
@@ -68,22 +69,6 @@ fn take_next_pending(queue: &mut crate::state::Queue) -> Option<u64> {
         item.cancel = Some(CancellationToken::new());
     }
     Some(id)
-}
-
-/// Dispatch a queued item to its phase based on `kind`:
-/// - `Probe` (a submitted URL of unknown type) -> classify via
-///   `--flat-playlist -j`: a playlist is expanded into per-video `Video`
-///   items, a single video falls through to [`run_download`].
-/// - `Video` (known single video) -> download directly via [`run_download`].
-async fn run_item(state: &Arc<AppState>, item_id: u64) {
-    let kind = {
-        let q = state.queue.lock().await;
-        q.get(item_id).map(|i| i.kind).unwrap_or(ItemKind::Probe)
-    };
-    match kind {
-        ItemKind::Probe => run_probe(state, item_id).await,
-        ItemKind::Video => run_download(state, item_id).await,
-    }
 }
 
 /// The download phase: spawn `yt-dlp` (with `--progress-template`) for one
@@ -262,271 +247,6 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     emit_final(state, Some(item_id)).await;
     state.emit(Event::Library(lib_frag));
     state.persist().await;
-}
-
-/// The probe phase: classify a submitted URL with `--flat-playlist -j` without
-/// downloading. A playlist (`_type:"url"` entries) is expanded into pending
-/// per-video `Video` items, streamed live as entries arrive; a single video
-/// (a full video dict with no `playlist_index`) borrows its title/duration and
-/// falls through to [`run_download`] for the actual download. Nothing is
-/// persisted mid-probe -- a crash re-runs the probe from scratch on restart,
-/// avoiding duplicated per-video items; the final state is persisted once at
-/// the end.
-async fn run_probe(state: &Arc<AppState>, item_id: u64) {
-    // Snapshot what we need to spawn (under lock), keep the cancel token.
-    let (url, browser, yt_dlp, cancel) = {
-        let q = state.queue.lock().await;
-        let item = match q.get(item_id) {
-            Some(i) => i,
-            None => return,
-        };
-        (
-            item.url.clone(),
-            state.cfg.cookies_from_browser.clone(),
-            state.cfg.yt_dlp.clone(),
-            item.cancel.clone().unwrap_or_else(CancellationToken::new),
-        )
-    };
-
-    // Build + spawn the probe (no -P, no progress template -- never writes
-    // files or emits progress ticks).
-    let mut cmd = ytdlp::build_probe(&yt_dlp, browser.as_deref(), &url);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = format!("failed to spawn yt-dlp probe: {e}");
-            tracing::error!("{msg}");
-            let mut q = state.queue.lock().await;
-            if let Some(item) = q.get_mut(item_id) {
-                item.status = ItemStatus::Failed;
-                item.error = Some(msg.clone());
-                item.cancel = None;
-            }
-            drop(q);
-            emit_final(state, None).await;
-            state.persist().await;
-            return;
-        }
-    };
-
-    // Emit a queue swap (item just went active) + initial status.
-    {
-        let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
-        let active = q.get(item_id).cloned();
-        drop(q);
-        state.emit(Event::Status(render::render_status(active.as_ref())));
-    }
-
-    // Wire stdout + stderr into a single mpsc of lines.
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let (tx, mut rx) = mpsc::channel::<String>(256);
-    if let Some(out) = stdout {
-        let tx = tx.clone();
-        tokio::spawn(async move { pump_lines(out, tx).await });
-    }
-    if let Some(err) = stderr {
-        let tx = tx.clone();
-        tokio::spawn(async move { pump_lines(err, tx).await });
-    }
-    drop(tx);
-
-    let mut enqueued: u64 = 0;
-    let mut playlist_title: Option<String> = None;
-    let mut single: Option<(Option<String>, Option<f64>)> = None;
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = state.shutdown.cancelled() => {
-                tracing::info!("shutdown: killing yt-dlp probe for item {item_id}");
-                let _ = child.kill().await;
-                // Re-queue as Pending so it re-probes on next launch.
-                {
-                    let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id) {
-                        item.status = ItemStatus::Pending;
-                        item.progress = None;
-                        item.cancel = None;
-                    }
-                }
-                emit_final(state, Some(item_id)).await;
-                state.persist().await;
-                return;
-            }
-            _ = cancel.cancelled() => {
-                tracing::info!("cancel: killing yt-dlp probe for item {item_id}");
-                let _ = child.kill().await;
-                drain(&mut rx).await;
-                {
-                    let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id) {
-                        item.status = ItemStatus::Cancelled;
-                        item.progress = None;
-                        item.cancel = None;
-                    }
-                }
-                emit_final(state, Some(item_id)).await;
-                state.persist().await;
-                return;
-            }
-            line = rx.recv() => match line {
-                None => break,
-                Some(line) => {
-                    probe_handle_line(
-                        state, item_id, &line, &mut enqueued, &mut playlist_title, &mut single,
-                    ).await;
-                }
-            }
-        }
-    }
-
-    // Drain any remaining buffered output before waiting on exit.
-    while let Some(line) = rx.recv().await {
-        probe_handle_line(
-            state, item_id, &line, &mut enqueued, &mut playlist_title, &mut single,
-        ).await;
-    }
-
-    let exit_status = match child.wait().await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("waiting on yt-dlp probe: {e}");
-            let mut q = state.queue.lock().await;
-            if let Some(item) = q.get_mut(item_id) {
-                item.status = ItemStatus::Failed;
-                item.error = Some(format!("yt-dlp probe wait error: {e}"));
-                item.cancel = None;
-            }
-            drop(q);
-            emit_final(state, Some(item_id)).await;
-            state.persist().await;
-            return;
-        }
-    };
-
-    if enqueued > 0 {
-        // Playlist expanded into per-video items: mark the probe item done.
-        let label = match &playlist_title {
-            Some(t) => format!("playlist: {t} ({enqueued} videos)"),
-            None => format!("playlist ({enqueued} videos)"),
-        };
-        {
-            let mut q = state.queue.lock().await;
-            if let Some(item) = q.get_mut(item_id) {
-                item.status = ItemStatus::Done;
-                item.title = Some(label.clone());
-                item.progress = None;
-                item.cancel = None;
-            }
-        }
-        tracing::info!("item {item_id} expanded playlist into {enqueued} video items");
-        emit_final(state, Some(item_id)).await;
-        state.persist().await;
-        return;
-    }
-
-    if let Some((title, duration)) = single {
-        // Single video: borrow title/duration, then download the original URL
-        // via the download phase (same item, same cancel token).
-        {
-            let mut q = state.queue.lock().await;
-            if let Some(item) = q.get_mut(item_id) {
-                item.title = title;
-                item.duration = duration;
-            }
-        }
-        run_download(state, item_id).await;
-        return;
-    }
-
-    // Neither entries nor a single video: empty playlist or extraction error.
-    let success = exit_status.success();
-    let err = {
-        let q = state.queue.lock().await;
-        q.get(item_id).and_then(|i| i.error.clone())
-    };
-    {
-        let mut q = state.queue.lock().await;
-        if let Some(item) = q.get_mut(item_id) {
-            item.cancel = None;
-            if success {
-                item.status = ItemStatus::Done;
-                item.title = Some("no videos extracted".to_string());
-                item.progress = None;
-            } else {
-                item.status = ItemStatus::Failed;
-                item.error = Some(err.unwrap_or_else(|| {
-                    format!(
-                        "yt-dlp probe failed{}",
-                        exit_status.code().map(|c| format!(" (status {c})")).unwrap_or_default()
-                    )
-                }));
-            }
-        }
-    }
-    emit_final(state, Some(item_id)).await;
-    state.persist().await;
-}
-
-/// Handle one probe output line: a flat-playlist entry (enqueue a per-video
-/// `Video` item, streamed live), a single-video dict (capture title/duration
-/// for the fall-through download), or a log line (harvest `ERROR:` into the
-/// item's error field and echo it to the log ring).
-async fn probe_handle_line(
-    state: &Arc<AppState>,
-    item_id: u64,
-    line: &str,
-    enqueued: &mut u64,
-    playlist_title: &mut Option<String>,
-    single: &mut Option<(Option<String>, Option<f64>)>,
-) {
-    if let Some(entry) = parse_flat_line(line) {
-        if entry.is_playlist_entry() {
-            if playlist_title.is_none() {
-                *playlist_title = entry.playlist_title.clone();
-            }
-            let vurl = entry.url.clone().unwrap();
-            let vtitle = entry.title.clone();
-            let vduration = entry.duration;
-            {
-                let mut q = state.queue.lock().await;
-                q.enqueue_video(vurl, vtitle, vduration);
-            }
-            *enqueued += 1;
-            // Live queue swap so per-video rows stream in as entries arrive.
-            {
-                let q = state.queue.lock().await;
-                state.emit(Event::Queue(render::render_queue(&q)));
-            }
-        } else if single.is_none() {
-            // Single-video dict: `url` here is the *media* URL, so we keep the
-            // original submitted URL for download and borrow only title/duration.
-            *single = Some((entry.title.clone(), entry.duration));
-        }
-        return;
-    }
-    // Log line: WARNING:/ERROR:/status. Harvest ERROR: into item.error.
-    if let Some(rest) = line.strip_prefix("ERROR:") {
-        let msg = rest.trim();
-        if !msg.is_empty() {
-            let mut q = state.queue.lock().await;
-            if let Some(item) = q.get_mut(item_id) {
-                if item.error.is_none() {
-                    item.error = Some(msg.to_string());
-                }
-            }
-            drop(q);
-            let q = state.queue.lock().await;
-            state.emit(Event::Queue(render::render_queue(&q)));
-        }
-    }
-    {
-        let mut ring = state.log_ring.lock().await;
-        ring.push(line.to_string());
-    }
-    state.emit(Event::Log(render::render_log_line(line)));
 }
 
 /// Read lines from a child pipe and forward them to `tx`.
@@ -723,5 +443,149 @@ async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
     state.emit(Event::Queue(queue_frag));
 }
 
-#[allow(dead_code)]
-fn _unused(_item: &QueueItem) {}
+// ---------------------------------------------------------------------------
+// Synchronous probe (runs in POST /download, not the worker)
+// ---------------------------------------------------------------------------
+
+/// How long a probe is allowed to run before we give up and kill it. The
+/// probe is `--flat-playlist -j` (no download), so this is generous; it only
+/// guards against a hung yt-dlp hanging the request handler.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Outcome of probing one submitted URL with `yt-dlp --flat-playlist -j`.
+///
+/// The probe classifies the URL without downloading:
+/// - a **playlist** yields N `_type:"url"` entries whose `url` is already the
+///   full per-video watch URL -> presented for approval (never persisted);
+/// - a **single video** yields one full video dict (no playlist entries) ->
+///   the caller enqueues the *original* submitted URL directly (the dict's
+///   `url` is a media URL, not a watch URL), borrowing only title/duration.
+///
+/// Because `kill_on_drop(true)` is set on the command, a dropped probe future
+/// (request cancelled, server shutdown) kills the child automatically.
+pub struct ProbeOutcome {
+    /// Playlist entries (`_type:"url"` with a `url`). Empty for a single video.
+    pub entries: Vec<FlatEntry>,
+    /// A single-video dict, if the URL was not a playlist. Its `url` is the
+    /// *media* URL (do not enqueue); borrow `title`/`duration` only.
+    pub single: Option<FlatEntry>,
+    /// yt-dlp exited successfully (exit code 0).
+    pub success: bool,
+    /// Best-effort error message captured from stderr (`ERROR:`) or a spawn /
+    /// timeout failure. `None` when nothing went wrong.
+    pub error: Option<String>,
+}
+
+impl ProbeOutcome {
+    fn error(msg: impl Into<String>) -> Self {
+        ProbeOutcome {
+            entries: Vec::new(),
+            single: None,
+            success: false,
+            error: Some(msg.into()),
+        }
+    }
+}
+
+/// Probe one submitted URL with `--flat-playlist -j` and classify it. Runs
+/// concurrently with the worker's downloads (it writes no files, emits no
+/// progress ticks) and bounds itself with [`PROBE_TIMEOUT`]. Stderr `ERROR:`
+/// lines are harvested into [`ProbeOutcome::error`]; nothing is broadcast to
+/// the global log ring / SSE (the probe is a private request-handler
+/// interaction whose result is returned to the caller).
+pub async fn probe(state: &Arc<AppState>, url: &str) -> ProbeOutcome {
+    let (yt_dlp, browser) = {
+        let cfg = &state.cfg;
+        (cfg.yt_dlp.clone(), cfg.cookies_from_browser.clone())
+    };
+
+    let mut child = match ytdlp::build_probe(&yt_dlp, browser.as_deref(), url).spawn() {
+        Ok(c) => c,
+        Err(e) => return ProbeOutcome::error(format!("failed to spawn yt-dlp probe: {e}")),
+    };
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (tx, mut rx) = mpsc::channel::<String>(256);
+    if let Some(out) = stdout {
+        let tx = tx.clone();
+        tokio::spawn(async move { pump_lines(out, tx).await });
+    }
+    if let Some(err) = stderr {
+        let tx = tx.clone();
+        tokio::spawn(async move { pump_lines(err, tx).await });
+    }
+    drop(tx);
+
+    let mut entries: Vec<FlatEntry> = Vec::new();
+    let mut single: Option<FlatEntry> = None;
+    let mut err_msg: Option<String> = None;
+
+    let drain_result = tokio::time::timeout(PROBE_TIMEOUT, async {
+        while let Some(line) = rx.recv().await {
+            if let Some(entry) = parse_flat_line(&line) {
+                if entry.is_playlist_entry() {
+                    entries.push(entry);
+                } else if single.is_none() {
+                    single = Some(entry);
+                }
+                continue;
+            }
+            // Non-JSON line (rare on stdout; common on stderr). Harvest the
+            // last `ERROR:` line as the surfaced message.
+            if let Some(rest) = line.strip_prefix("ERROR:") {
+                let msg = rest.trim();
+                if !msg.is_empty() {
+                    err_msg = Some(msg.to_string());
+                }
+            }
+        }
+    })
+    .await;
+
+    if drain_result.is_err() {
+        // Timed out: kill the (possibly still running) child and bail.
+        let _ = child.kill().await;
+        return ProbeOutcome::error(format!(
+            "probe timed out after {}s",
+            PROBE_TIMEOUT.as_secs()
+        ));
+    }
+
+    // The pumps close their senders on EOF, so by here the child has exited.
+    let status = match child.wait().await {
+        Ok(s) => s,
+        Err(e) => return ProbeOutcome::error(format!("yt-dlp probe wait error: {e}")),
+    };
+
+    let success = status.success();
+    // If we got entries or a single video, the probe succeeded for our
+    // purposes even if yt-dlp printed a trailing WARNING; otherwise surface
+    // the captured error (or a generic exit-status message).
+    if !entries.is_empty() || single.is_some() {
+        return ProbeOutcome {
+            entries,
+            single,
+            success: true,
+            error: None,
+        };
+    }
+    ProbeOutcome {
+        entries,
+        single,
+        success,
+        error: err_msg.or_else(|| {
+            if success {
+                None
+            } else {
+                Some(format!(
+                    "yt-dlp probe failed{}",
+                    status
+                        .code()
+                        .map(|c| format!(" (status {c})"))
+                        .unwrap_or_default()
+                ))
+            }
+        }),
+    }
+}

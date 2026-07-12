@@ -1058,6 +1058,7 @@ dependencies = [
  "axum",
  "clap",
  "dirs",
+ "form_urlencoded",
  "futures-util",
  "mime_guess",
  "serde",

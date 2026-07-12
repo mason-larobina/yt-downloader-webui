@@ -81,22 +81,16 @@ impl Queue {
         id
     }
 
-    /// Append a pending **probe** item for a submitted URL of unknown type.
-    /// The worker runs `--flat-playlist -j` on it first; a playlist is
-    /// expanded into per-video items, a single video is downloaded directly.
+    /// Append a pending **video** item for a single-video URL. The worker
+    /// downloads it directly (no probe). `title`/`duration` are borrowed from
+    /// the synchronous probe in `POST /download` (a playlist entry's `url` is
+    /// already the full watch URL; a single video keeps the original URL).
     /// Returns the new item's id.
-    pub fn enqueue(&mut self, url: String) -> u64 {
-        let id = self.alloc_id();
-        let item = QueueItem::new(id, url);
-        self.items.push(item);
-        id
-    }
-
-    /// Append a pending **video** item produced by playlist expansion. These
-    /// are known single-video URLs (`entry.url` from `--flat-playlist -j` is
-    /// already the full watch URL), so the worker downloads them directly
-    /// without re-probing. Returns the new item's id.
-    pub fn enqueue_video(
+    ///
+    /// Playlists are never persisted: their expansion happens in the request
+    /// handler and is presented for approval; only the approved per-video
+    /// items reach the queue (and thus the state dir).
+    pub fn enqueue(
         &mut self,
         url: String,
         title: Option<String>,
@@ -104,7 +98,6 @@ impl Queue {
     ) -> u64 {
         let id = self.alloc_id();
         let mut item = QueueItem::new(id, url);
-        item.kind = ItemKind::Video;
         item.title = title;
         item.duration = duration;
         self.items.push(item);
@@ -172,9 +165,10 @@ pub struct QueueItem {
     pub id: u64,
     pub url: String,
     pub status: ItemStatus,
-    /// How the worker treats this item: `Probe` (submitted, classify first)
-    /// or `Video` (known single video, download directly). See `ItemKind`.
-    pub kind: ItemKind,
+    /// Video title resolved from the `--flat-playlist -j` probe (run in the
+    /// request handler), used as the row label before yt-dlp emits a
+    /// `Destination:`/filename. `None` for submitted URLs that were not
+    /// resolved by a probe (e.g. approved without title info).
     /// Video title resolved from the `--flat-playlist -j` probe, used as the
     /// row label before yt-dlp emits a `Destination:`/filename. `None` for
     /// submitted URLs until they are probed.
@@ -195,7 +189,6 @@ impl QueueItem {
             id,
             url,
             status: ItemStatus::Pending,
-            kind: ItemKind::Probe,
             title: None,
             duration: None,
             filename: None,
@@ -224,46 +217,6 @@ pub enum ItemStatus {
     Done,
     Failed,
     Cancelled,
-}
-
-/// How the worker should treat a queued item.
-///
-/// - `Probe`: a *submitted* URL of unknown type. The worker first runs
-///   `yt-dlp --flat-playlist -j` to classify it: a playlist (`_type:"url"`
-///   entries) is expanded into per-video `Video` items; a single video
-///   (`_type:"video"` / no entries) is then downloaded directly. This costs a
-///   second extraction for single videos but needs no URL-shape guessing.
-/// - `Video`: a known single-video URL (produced by expansion). The worker
-///   downloads it directly -- no probe -- since its type is already known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemKind {
-    Probe,
-    Video,
-}
-
-impl ItemKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ItemKind::Probe => "probe",
-            ItemKind::Video => "video",
-        }
-    }
-
-    /// Default for persisted items written before `kind` existed: treat as a
-    /// fresh submitted URL (re-probe on restart). Safe because probing a
-    /// single video just downloads it, and probing a playlist re-expands.
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "video" => ItemKind::Video,
-            _ => ItemKind::Probe,
-        }
-    }
-}
-
-impl Default for ItemKind {
-    fn default() -> Self {
-        ItemKind::Probe
-    }
 }
 
 impl ItemStatus {

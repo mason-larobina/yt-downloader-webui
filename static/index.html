@@ -20,15 +20,17 @@
 </header>
 
 <section class="submit">
-  <form hx-post="/download" hx-target="#ack" hx-swap="innerHTML"
+  <form hx-post="/download" hx-target="#approve" hx-swap="innerHTML"
+        hx-disabled-elt="#dl-btn"
         hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
     <textarea name="urls" rows="5"
               placeholder="paste one URL per line&#10;https://..."></textarea>
     <div class="actions">
       <button type="submit" id="dl-btn">Download</button>
-      <span id="ack" class="ack"></span>
     </div>
   </form>
+  <div id="approve" class="approve"></div>
+  <span id="ack" class="ack"></span>
 </section>
 
 <section id="output" class="output">
@@ -66,6 +68,20 @@
     });
     log.addEventListener('htmx:afterSwap', function () {
       if (!stuck) log.scrollTop = log.scrollHeight;
+    });
+  })();
+  // Keep the "Download selected (N)" count in the approval list in sync with
+  // the checked checkboxes. The list is swapped in dynamically by POST
+  // /download, so listen at the document level.
+  (function () {
+    document.addEventListener('change', function (e) {
+      var box = e.target;
+      if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox') return;
+      var form = box.closest('.approvelist');
+      if (!form) return;
+      var n = form.querySelectorAll('input[name="entry"]:checked').length;
+      var el = form.querySelector('.sel-count');
+      if (el) el.textContent = String(n);
     });
   })();
 </script>

@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use async_stream::stream;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Form, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::events::Event;
 use crate::library;
+use crate::parse::FlatEntry;
 use crate::render;
 use crate::state::{AppState, ItemStatus};
 use crate::worker;
@@ -23,6 +24,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/static/htmx-ext-sse.js", axum::routing::get(static_sse))
         .route("/static/app.css", axum::routing::get(static_css))
         .route("/download", axum::routing::post(post_download))
+        .route("/approve", axum::routing::post(post_approve))
         .route("/cancel/{id}", axum::routing::post(post_cancel))
         .route("/retry/{id}", axum::routing::post(post_retry))
         .route("/clear", axum::routing::post(post_clear))
@@ -82,7 +84,28 @@ pub struct DownloadForm {
     pub urls: String,
 }
 
-/// POST /download -- append URLs to the global queue; return an ack fragment.
+/// One decoded approval checkbox value (see `render::render_approval`). The
+/// checkbox `value` is the JSON serialisation of this; POST /approve gets the
+/// browser-decoded JSON strings back as repeated `entry` form fields.
+#[derive(Deserialize)]
+struct ApproveEntry {
+    url: String,
+    title: Option<String>,
+    duration: Option<f64>,
+}
+
+/// POST /download -- probe each pasted URL synchronously (fast: `--flat-playlist
+/// -j`, no download), then either enqueue single videos directly or return a
+/// playlist's entries as an approval list. The probe runs concurrently with
+/// the worker's downloads; only per-video items are ever persisted.
+///
+/// Returns a fragment swapped into `#approve`:
+/// - single video(s) -> `<span class="ack">queued N download(s)</span>` (the
+///   items are already in the queue);
+/// - playlist -> `render::render_approval(...)` (a form of checkboxes);
+/// - mixed -> approval list with a note naming the directly-queued count and
+///   any per-URL probe errors;
+/// - all failed / empty -> `<span class="err">...</span>`.
 async fn post_download(
     State(state): State<Arc<AppState>>,
     Form(form): Form<DownloadForm>,
@@ -95,26 +118,134 @@ async fn post_download(
         .collect();
 
     if urls.is_empty() {
-        return r#"<span id="ack" class="err">paste at least one URL</span>"#.to_string();
+        return r#"<span class="err">paste at least one URL</span>"#.to_string();
     }
 
-    let n = urls.len();
+    let mut direct: u64 = 0;
+    let mut entries: Vec<FlatEntry> = Vec::new();
+    let mut playlist_title: Option<String> = None;
+    let mut errors: Vec<(String, String)> = Vec::new();
+
+    for u in &urls {
+        let outcome = worker::probe(&state, u).await;
+        if !outcome.entries.is_empty() {
+            if playlist_title.is_none() {
+                playlist_title = outcome
+                    .entries
+                    .first()
+                    .and_then(|e| e.playlist_title.clone());
+            }
+            entries.extend(outcome.entries);
+        } else if let Some(sv) = outcome.single {
+            let title = sv.title.clone();
+            let duration = sv.duration;
+            {
+                let mut q = state.queue.lock().await;
+                q.enqueue(u.clone(), title, duration);
+            }
+            direct += 1;
+        } else {
+            errors.push((
+                u.clone(),
+                outcome
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "no videos extracted".to_string()),
+            ));
+        }
+    }
+
+    // Anything directly enqueued needs the worker woken + a queue swap + persist.
+    if direct > 0 {
+        state.notify.notify_one();
+        let q = state.queue.lock().await;
+        state.emit(Event::Queue(render::render_queue(&q)));
+        drop(q);
+        state.persist().await;
+    }
+
+    if !entries.is_empty() {
+        let note = {
+            let mut parts: Vec<String> = Vec::new();
+            if direct > 0 {
+                parts.push(format!(
+                    "{direct} single-video URL{} queued directly",
+                    if direct == 1 { "" } else { "s" }
+                ));
+            }
+            for (u, m) in &errors {
+                parts.push(format!("{}: {m}", u));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("; "))
+            }
+        };
+        return render::render_approval(playlist_title.as_deref(), &entries, note.as_deref());
+    }
+
+    if direct > 0 {
+        return format!(
+            r#"<span class="ack">queued {direct} download{}</span>"#,
+            if direct == 1 { "" } else { "s" }
+        );
+    }
+
+    // Nothing enqueued, no playlist: surface the first error.
+    let msg = errors
+        .first()
+        .map(|(_, m)| m.clone())
+        .unwrap_or_else(|| "no videos extracted".to_string());
+    format!(r#"<span class="err">{}</span>"#, render::esc(&msg))
+}
+
+/// POST /approve -- enqueue the per-video items the user ticked in an approval
+/// list. Each checked checkbox carried a JSON `ApproveEntry` as its value;
+/// we parse the raw urlencoded body ourselves with `form_urlencoded` (axum's
+/// default `Form`/`serde_urlencoded` does not collapse repeated `entry` keys
+/// into a `Vec`). Returns an ack fragment (into `#approve`), replacing the
+/// approval list.
+async fn post_approve(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> String {
+    let entries: Vec<String> = form_urlencoded::parse(&body)
+        .filter(|(k, _)| k == "entry")
+        .map(|(_, v)| v.into_owned())
+        .collect();
+
+    if entries.is_empty() {
+        return r#"<span class="err">select at least one video</span>"#.to_string();
+    }
+
+    let mut n: u64 = 0;
     {
         let mut q = state.queue.lock().await;
-        for u in urls {
-            q.enqueue(u);
+        for raw in &entries {
+            match serde_json::from_str::<ApproveEntry>(raw) {
+                Ok(e) => {
+                    q.enqueue(e.url, e.title, e.duration);
+                    n += 1;
+                }
+                Err(_) => {
+                    // Skip a malformed value rather than failing the whole
+                    // batch; the user can re-approve.
+                }
+            }
         }
     }
     state.notify.notify_one();
-
-    // Emit a fresh queue fragment so all tabs update.
     {
         let q = state.queue.lock().await;
         state.emit(Event::Queue(render::render_queue(&q)));
     }
     state.persist().await;
 
-    format!(r#"<span id="ack">added {n} to queue</span>"#)
+    format!(
+        r#"<span class="ack">queued {n} download{}</span>"#,
+        if n == 1 { "" } else { "s" }
+    )
 }
 
 // ------------------------------ /cancel/:id --------------------------------
