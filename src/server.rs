@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use axum::body::{Body, Bytes};
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -32,6 +32,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/file/{name}", axum::routing::get(library::get_file))
         .route("/thumb/{name}", axum::routing::get(get_thumb))
         .route("/delete/{name}", axum::routing::post(library::delete_file))
+        .route("/logs/{id}", axum::routing::get(get_logs))
+        .route("/delete-item/{id}", axum::routing::post(post_delete_item))
         .route("/events", axum::routing::get(get_events))
         .with_state(state)
 }
@@ -43,13 +45,21 @@ const HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
 const HTMX_SSE_JS: &[u8] = include_bytes!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
 
-async fn index() -> Response {
+async fn index(State(state): State<Arc<AppState>>) -> Response {
+    // Lightweight placeholder substitution (no template engine): inject the
+    // configured download dir + cookie source into the topbar.
+    let body = INDEX_HTML
+        .replace("{{dir}}", &render::esc(&state.cfg.download_dir.display().to_string()))
+        .replace(
+            "{{cookies}}",
+            &render::esc(state.cfg.cookies_from_browser.as_deref().unwrap_or("none")),
+        );
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    (StatusCode::OK, headers, INDEX_HTML).into_response()
+    (StatusCode::OK, headers, body).into_response()
 }
 
 async fn static_htmx() -> Response {
@@ -466,6 +476,81 @@ async fn get_thumb(
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
     (StatusCode::OK, headers, Body::from(bytes)).into_response()
+}
+
+// ------------------------------ /logs/:id ---------------------------------
+
+/// Query params for /logs/:id.
+#[derive(Deserialize, Default)]
+struct LogsQuery {
+    /// When present, return only the inner log-line divs (the body of
+    /// `#lp-lines`) -- used by the pane's self-poll so the scroll container
+    /// itself is never swapped (preserving scroll position).
+    pub lines: Option<String>,
+}
+
+/// GET /logs/:id -- render the per-video logs pane for `id`. Without
+/// `?lines=1` returns the full pane (header + scroll body); with `?lines=1`
+/// returns just the inner log-line divs for the pane's self-poll. Returns a
+/// minimal "not found" pane when the item is gone (e.g. cleared mid-view).
+async fn get_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u64>,
+    Query(q): Query<LogsQuery>,
+) -> String {
+    let item = state.queue.lock().await.get(id).cloned();
+    match item {
+        Some(item) if q.lines.is_some() => render::render_log_lines(&item.logs),
+        Some(item) => render::render_logs_pane(&item),
+        None => r#"<div class="lp-head"><span class="lp-title">logs</span><span class="lp-label">item gone</span></div><div id="lp-body" class="lp-body"><div id="lp-lines" class="lp-lines"><div class="lp-empty-lines">(this video is no longer in the queue)</div></div></div>"#
+            .to_string(),
+    }
+}
+
+// ------------------------------ /delete-item/:id --------------------------
+
+/// POST /delete-item/:id -- delete a Done item's downloaded file (if present)
+/// and remove the (terminal) card from the queue. Used by the card overlay's
+/// `delete` button. No-op for non-terminal / missing items (returns an ack).
+async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
+    let (filename, download_dir) = {
+        let q = state.queue.lock().await;
+        let item = match q.get(id) {
+            Some(i) => i,
+            None => return format!(r#"<span id="ack">no such item {id}</span>"#),
+        };
+        if !item.status.is_terminal() {
+            return format!(
+                r#"<span id="ack" class="err">item {id} is not finished; cancel it first</span>"#
+            );
+        }
+        (item.filename.clone(), state.cfg.download_dir.clone())
+    };
+
+    // Delete the file on disk (best-effort).
+    let mut file_msg = String::new();
+    if let Some(name) = &filename {
+        if let Some(path) = crate::library::resolve_safe(&download_dir, name) {
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                file_msg = format!(" (file: {e})");
+            }
+        }
+    }
+
+    let removed = {
+        let mut q = state.queue.lock().await;
+        q.remove_terminal(id)
+    };
+    if removed {
+        let q = state.queue.lock().await;
+        state.emit(crate::events::Event::Queue(render::render_queue(&q)));
+        drop(q);
+        // Refresh the library view too in case it's open elsewhere.
+        let lib_frag = render::render_library_scan(&download_dir);
+        state.emit(crate::events::Event::Library(lib_frag));
+        state.persist().await;
+    }
+    format!(r#"<span id="ack">deleted item {id}{file_msg}</span>"#)
 }
 
 // ------------------------------ /events (SSE) ------------------------------

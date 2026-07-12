@@ -109,9 +109,9 @@ wait "$SSE" || true
 # Let server #2 self-terminate via --timeout so the run isn't left backgrounded.
 wait "$SRV2" 2>/dev/null || true
 
-echo "=== final queue event (expect 'row done') ==="
+echo "=== final queue event (expect 'card done') ==="
 awk '/^event: queue$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
-  | grep -oE 'row (done|failed)' | head
+  | grep -oE 'card (done|failed)' | head
 echo "=== files in download dir ==="
 ls -la "$DL"
 echo "=== server #2 log (expect 'item N done') ==="
@@ -126,7 +126,7 @@ if ! grep -q 'flushing queue on shutdown' "$WORK/server.1.log"; then echo "FAIL:
 # restart picked up the pending item
 if ! grep -q 'will be re-started' "$WORK/server.2.log"; then echo "FAIL: pending item not detected on restart"; fail=1; fi
 # item reached done after restart
-if ! grep -q 'row done' "$WORK/sse.raw" && ! grep -q 'item .* done' "$WORK/server.2.log"; then
+if ! grep -q 'card done' "$WORK/sse.raw" && ! grep -q 'item .* done' "$WORK/server.2.log"; then
   echo "FAIL: re-started item did not reach done"; fail=1
 fi
 if [[ -z "$(find "$DL" -type f ! -name '.*' -print -quit)" ]]; then echo "FAIL: no file downloaded"; fail=1; fi

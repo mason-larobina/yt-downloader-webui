@@ -10,7 +10,7 @@ pub enum Event {
     Status(String),
     /// Appended to `#log`.
     Log(String),
-    /// Replaces `#queue` (the full queue list).
+    /// Replaces `#cards` (the full video-card list).
     Queue(String),
     /// Replaces `#library` (the file list).
     Library(String),

@@ -13,6 +13,9 @@ pub const EVENT_CHANNEL_CAP: usize = 512;
 pub const LOG_RING_CAP: usize = 1000;
 /// Max items retained in the queue (terminal history). Pending + active always retained.
 pub const QUEUE_HISTORY_CAP: usize = 200;
+/// Max yt-dlp log lines retained per item (oldest dropped once exceeded).
+/// Persisted alongside the item so logs survive a restart.
+pub const ITEM_LOG_CAP: usize = 2000;
 
 /// Shared application state.
 pub struct AppState {
@@ -133,6 +136,19 @@ impl Queue {
         }
         false
     }
+    /// Remove a terminal (Done/Failed/Cancelled) item by id. Returns true if
+    /// removed. Pending/Active items are never removed (use cancel/retry).
+    pub fn remove_terminal(&mut self, id: u64) -> bool {
+        if let Some(pos) = self
+            .items
+            .iter()
+            .position(|i| i.id == id && i.status.is_terminal())
+        {
+            self.items.remove(pos);
+            return true;
+        }
+        false
+    }
     /// Drop all terminal (Done/Failed/Cancelled) items. Pending + active retained.
     /// Returns the number removed.
     pub fn clear_terminal(&mut self) -> usize {
@@ -190,6 +206,11 @@ pub struct QueueItem {
     /// thumbnail URL) or, if absent then, by ffmpeg after a successful
     /// download. `None` until resolved.
     pub thumbnail: Option<String>,
+    /// Per-item yt-dlp output (stdout+stderr), captured line-by-line during
+    /// the download and retained (capped to [`ITEM_LOG_CAP`]) for inspection in
+    /// the logs pane at any point -- in-progress or after completion.
+    /// Persisted with the item so the logs survive a server restart.
+    pub logs: Vec<String>,
     /// Set when Active; POST /cancel and shutdown trip it.
     pub cancel: Option<CancellationToken>,
     pub enqueued_at: time::OffsetDateTime,
@@ -207,8 +228,19 @@ impl QueueItem {
             progress: None,
             error: None,
             thumbnail: None,
+            logs: Vec::new(),
             cancel: None,
             enqueued_at: time::OffsetDateTime::now_utc(),
+        }
+    }
+
+    /// Append one yt-dlp output line to this item's log buffer, trimming the
+    /// oldest entries once [`ITEM_LOG_CAP`] is exceeded.
+    pub fn push_log(&mut self, line: String) {
+        self.logs.push(line);
+        if self.logs.len() > ITEM_LOG_CAP {
+            let drop_n = self.logs.len() - ITEM_LOG_CAP;
+            self.logs.drain(0..drop_n);
         }
     }
 

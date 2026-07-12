@@ -88,7 +88,7 @@ check "probe error fragment" 'class="err"' "$ack"
 check "probe error message" "Video unavailable" "$ack"
 # Confirm nothing was enqueued: a fresh SSE snapshot has no queue row.
 timeout 2 curl -sN "$base/events" > "$WORK/sse.raw" 2>/dev/null || true
-if grep -q 'class="row ' "$WORK/sse.raw"; then
+if grep -q 'class="card ' "$WORK/sse.raw"; then
   echo "FAIL: a failing-URL probe should not enqueue an item"; fail=1
 else
   echo "ok   no item enqueued for failed probe"

@@ -160,15 +160,16 @@ pub fn render_status(active: Option<&QueueItem>) -> String {
     }
 }
 
-// ----------------------------- #queue --------------------------------------
+// ----------------------------- #cards --------------------------------------
 
-/// Render the full `#queue` fragment.
+/// Render the cards-pane inner fragment (swapped into `#cards` via the
+/// `queue` SSE event). Cards are rendered newest-first (most recently
+/// enqueued at the top) so the latest activity is visible without scrolling.
+/// Each card is a large thumbnail with title + progress; an overlay on the
+/// thumbnail's top-right exposes contextual actions (download/open/delete/
+/// logs for done items; cancel/logs for active/pending; retry/logs for
+/// failed/cancelled).
 pub fn render_queue(queue: &Queue) -> String {
-    let mut rows = String::new();
-    for item in &queue.items {
-        rows.push_str(&render_queue_row(item));
-    }
-
     let pending = queue
         .items
         .iter()
@@ -179,6 +180,7 @@ pub fn render_queue(queue: &Queue) -> String {
         .iter()
         .filter(|i| i.status.is_terminal())
         .count();
+    let total = queue.items.len();
 
     let clear_btn = if terminal > 0 {
         format!(
@@ -190,85 +192,173 @@ pub fn render_queue(queue: &Queue) -> String {
     };
 
     if queue.items.is_empty() {
-        return r#"<div id="queue" class="queue"><div class="empty">no items</div></div>"#.to_string();
+        return r##"<div class="cards-head"><span class="cards-title">downloads</span></div><div class="cards-list"><div class="empty">no videos yet &mdash; paste a URL</div></div>"##
+            .to_string();
     }
 
-    format!(
-        r#"<div id="queue" class="queue"><div class="qhead">queue ({items}, {pending} pending)</div>{rows}{clear}</div>"#,
-        items = queue.items.len(),
+    let head = format!(
+        r##"<div class="cards-head"><span class="cards-title">downloads</span><span class="cards-count">{total} total, {pending} pending</span>{clear}</div>"##,
+        total = total,
         pending = pending,
-        rows = rows,
         clear = clear_btn,
-    )
-}
+    );
 
-fn status_glyph(status: ItemStatus) -> &'static str {
-    match status {
-        ItemStatus::Pending => ".",
-        ItemStatus::Active => "~",
-        ItemStatus::Done => "v",
-        ItemStatus::Failed => "x",
-        ItemStatus::Cancelled => "-",
+    let mut cards = String::new();
+    // Newest first: iterate the queue (FIFO by enqueue time) in reverse.
+    for item in queue.items.iter().rev() {
+        cards.push_str(&render_card(item));
     }
+
+    format!(r#"{head}<div class="cards-list">{cards}</div>"#, cards = cards)
 }
 
-fn render_queue_row(item: &QueueItem) -> String {
-    let glyph = status_glyph(item.status);
-    let label = esc(item.label());
+/// Render one video card.
+fn render_card(item: &QueueItem) -> String {
     let status = item.status.as_str();
-    // Show the probe-resolved duration next to the label when known (mostly
-    // per-video items from playlist expansion).
+    let label = esc(item.label());
     let dur = human_duration(item.duration);
-    let label_html = if dur.is_empty() {
-        format!(r#"<span class="label">{label}</span>"#)
-    } else {
-        format!(r#"<span class="label">{label}</span> <span class="dur">{dur}</span>"#)
-    };
 
     let thumb_html = match &item.thumbnail {
         Some(name) => format!(
-            r##"<img class="thumb" src="/thumb/{name}" alt="" loading="lazy">"##,
+            r##"<img class="card-img" src="/thumb/{name}" alt="" loading="lazy">"##,
             name = esc(name)
         ),
-        None => String::new(),
+        None => r#"<div class="card-img card-img-placeholder"></div>"#.to_string(),
     };
 
-    let action = match item.status {
-        ItemStatus::Pending => format!(
-            r##"<button class="cancel" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML">cancel</button>"##,
-            id = item.id
-        ),
-        ItemStatus::Active => format!(
-            r##"<button class="cancel" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML">cancel</button>"##,
-            id = item.id
-        ),
-        ItemStatus::Failed | ItemStatus::Cancelled => format!(
-            r##"<button class="retry" hx-post="/retry/{id}" hx-target="#ack" hx-swap="innerHTML">retry</button>"##,
-            id = item.id
-        ),
-        ItemStatus::Done => match &item.filename {
-            Some(name) => format!(
-                r##"<a class="dl" href="/file/{name}?download=1">download</a>"##,
-                name = esc(name)
-            ),
-            None => String::new(),
-        },
-    };
-
-    let error = match (&item.status, &item.error) {
-        (ItemStatus::Failed, Some(e)) => format!(r#" <span class="err">error: {e}</span>"#, e = esc(e)),
+    // Progress bar (only meaningful while Active). For Pending we show a
+    // queued shimmer; terminal states show nothing (the badge conveys state).
+    let progress_html = match item.status {
+        ItemStatus::Active => {
+            let p = item.progress.as_ref();
+            let pct = p.and_then(|p| p.percent()).unwrap_or(0.0);
+            let width = pct.clamp(0.0, 100.0);
+            let speed = human_speed(p.and_then(|p| p.speed));
+            let eta = human_eta(p.and_then(|p| p.eta));
+            let mut bits: Vec<String> = Vec::new();
+            if !speed.is_empty() {
+                bits.push(speed);
+            }
+            if !eta.is_empty() {
+                bits.push(eta);
+            }
+            let meta = if bits.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<span class="card-prog-meta">{}</span>"#, bits.join(" | "))
+            };
+            format!(
+                r#"<div class="card-prog"><div class="card-bar"><i style="width:{w:.0}%"></i></div><span class="card-prog-pct">{pct:.0}%</span>{meta}</div>"#,
+                w = width,
+                pct = pct,
+                meta = meta,
+            )
+        }
+        ItemStatus::Pending => r#"<div class="card-prog"><div class="card-bar queued"><i></i></div><span class="card-prog-pct">queued</span></div>"#
+            .to_string(),
         _ => String::new(),
     };
 
+    let overlay = render_card_overlay(item);
+
+    let error_html = match (&item.status, &item.error) {
+        (ItemStatus::Failed, Some(e)) => {
+            format!(r#"<div class="card-err">{e}</div>"#, e = esc(e))
+        }
+        _ => String::new(),
+    };
+
+    let sub_html = if dur.is_empty() {
+        format!(r#"<div class="card-sub">{status}</div>"#)
+    } else {
+        format!(r#"<div class="card-sub"><span class="dur">{dur}</span> &middot; {status}</div>"#)
+    };
+
     format!(
-        r##"<div class="row {status}"><span class="glyph">{g}</span>{thumb} {label_html} <span class="st">({status})</span> {action}{error}</div>"##,
-        g = glyph,
-        thumb = thumb_html,
-        label_html = label_html,
+        r##"<div class="card {status}" data-id="{id}">{thumb}<span class="card-badge {status}">{status}</span><div class="card-overlay">{overlay}</div>{prog}<div class="card-meta"><div class="card-title">{label}</div>{sub}</div>{err}</div>"##,
         status = status,
-        action = action,
-        error = error,
+        id = item.id,
+        thumb = thumb_html,
+        overlay = overlay,
+        prog = progress_html,
+        label = label,
+        sub = sub_html,
+        err = error_html,
     )
+}
+
+/// Render the top-right thumbnail overlay buttons, context-aware by status.
+fn render_card_overlay(item: &QueueItem) -> String {
+    let id = item.id;
+    let logs_btn = format!(
+        r##"<button class="ov-btn" hx-get="/logs/{id}" hx-target="#logs-pane" hx-swap="innerHTML" title="show yt-dlp logs">logs</button>"##,
+        id = id
+    );
+    let actions: String = match item.status {
+        ItemStatus::Pending | ItemStatus::Active => format!(
+            r##"<button class="ov-btn ov-warn" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML">cancel</button>"##,
+            id = id
+        ),
+        ItemStatus::Failed | ItemStatus::Cancelled => format!(
+            r##"<button class="ov-btn ov-ok" hx-post="/retry/{id}" hx-target="#ack" hx-swap="innerHTML">retry</button>"##,
+            id = id
+        ),
+        ItemStatus::Done => match &item.filename {
+            Some(name) => {
+                let n = esc(name);
+                format!(
+                    r##"<a class="ov-btn" href="/file/{n}?download=1" title="download to this device">download</a><a class="ov-btn" href="/file/{n}?inline=1" target="_blank" rel="noopener" title="open/preview">open</a><button class="ov-btn ov-warn" hx-post="/delete-item/{id}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {n} from the server?">delete</button>"##,
+                    n = n,
+                    id = id
+                )
+            }
+            None => String::new(),
+        },
+    };
+    format!(r#"{actions}{logs_btn}"#)
+}
+
+// ----------------------------- #logs-pane ----------------------------------
+
+/// Render the full logs-pane fragment (swapped into `#logs-pane` by GET
+/// /logs/:id). Comprises a header (label + close + status) and a scrollable
+/// body whose inner `#lp-lines` polls GET /logs/:id?lines=1 every 2s while the
+/// item is still in flight, so the pane auto-updates without resetting the
+/// user's scroll position (the scroll container itself is never swapped).
+pub fn render_logs_pane(item: &QueueItem) -> String {
+    let id = item.id;
+    let label = esc(item.label());
+    let status = item.status.as_str();
+    let lines = render_log_lines(&item.logs);
+    // Only poll while the download may still produce output. Terminal items
+    // render a static snapshot.
+    let poll = if matches!(item.status, ItemStatus::Pending | ItemStatus::Active) {
+        format!(
+            r##"hx-get="/logs/{id}?lines=1" hx-trigger="every 2s" hx-target="this" hx-swap="innerHTML""##,
+            id = id
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r##"<div class="lp-head"><span class="lp-title">logs</span><span class="lp-label">{label}</span><span class="lp-status {status}">{status}</span><button class="lp-close" type="button" onclick="closeLogs()">close</button></div><div id="lp-body" class="lp-body"><div id="lp-lines" class="lp-lines" {poll}>{lines}</div></div>"##,
+        label = label,
+        status = status,
+        poll = poll,
+        lines = lines,
+    )
+}
+
+/// Render the inner log-line divs for an item (the body of `#lp-lines`).
+pub fn render_log_lines(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return r#"<div class="lp-empty-lines">(no output yet)</div>"#.to_string();
+    }
+    let mut out = String::new();
+    for l in lines {
+        out.push_str(&render_log_line(l));
+    }
+    out
 }
 
 // ----------------------------- #log ----------------------------------------

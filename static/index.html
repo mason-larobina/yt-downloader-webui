@@ -9,70 +9,74 @@
 <script src="/static/htmx-ext-sse.js"></script>
 </head>
 <body hx-ext="sse">
-<header class="topbar">
-  <span class="title">web-dl</span>
-  <span class="sep">&rarr;</span>
-  <span class="dir" id="dir"></span>
-  <span class="sep">|</span>
-  <span class="cookies">cookies: <span id="cookies"></span></span>
-  <span class="sep">|</span>
-  <a class="refresh-library" href="#" hx-get="/library" hx-target="#library" hx-swap="outerHTML">refresh library</a>
-</header>
+<div class="app">
 
-<section class="submit">
-  <form hx-post="/download" hx-target="#approve" hx-swap="innerHTML"
-        hx-disabled-elt="#dl-btn"
-        hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
-    <textarea name="urls" rows="5"
-              placeholder="paste one URL per line&#10;https://..."></textarea>
-    <div class="actions">
-      <button type="submit" id="dl-btn">Download</button>
+  <!-- Left pane: submit + approval -->
+  <aside class="pane pane-left">
+    <header class="topbar">
+      <span class="title">web-dl</span>
+      <span class="dir" title="download directory">{{dir}}</span>
+      <span class="cookies">cookies: {{cookies}}</span>
+    </header>
+
+    <form class="submit"
+          hx-post="/download" hx-target="#approve" hx-swap="innerHTML"
+          hx-disabled-elt="#dl-btn"
+          hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
+      <textarea name="urls" rows="6"
+                placeholder="paste one URL per line&#10;https://..."></textarea>
+      <div class="actions">
+        <button type="submit" id="dl-btn">Download</button>
+      </div>
+    </form>
+
+    <div id="approve" class="approve"></div>
+    <span id="ack" class="ack"></span>
+  </aside>
+
+  <!-- Middle pane: per-video cards -->
+  <main class="pane pane-cards">
+    <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
+      <div class="cards-head"><span class="cards-title">downloads</span></div>
+      <div class="cards-list"><div class="empty">connecting&hellip;</div></div>
     </div>
-  </form>
-  <div id="approve" class="approve"></div>
-  <span id="ack" class="ack"></span>
-</section>
+  </main>
 
-<section id="output" class="output">
-  <div id="status" sse-swap="status" hx-swap="outerHTML"
-       class="status idle">connecting&hellip;</div>
+  <!-- Right pane: per-video logs -->
+  <aside class="pane pane-logs" id="logs-pane">
+    <div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>
+  </aside>
 
-  <div id="queue" sse-swap="queue" hx-swap="innerHTML" class="queue">
-    <div class="empty">connecting&hellip;</div>
-  </div>
-
-  <div id="log-wrap" class="log-wrap">
-    <div class="lhead">log</div>
-    <div id="log" class="log">
-      <div sse-swap="log" hx-swap="beforeend"></div>
-    </div>
-  </div>
-
-  <div id="library" sse-swap="library" hx-swap="innerHTML" class="library">
-    <div class="empty">connecting&hellip;</div>
-  </div>
-</section>
+</div>
 
 <script>
-  // The SSE connection is established by htmx's sse extension when an element
-  // has hx-ext="sse" + sse-connect. We attach it here so it lives at the body
-  // level (global, app-lifetime) and every swap target below participates.
+  // Global SSE connection (htmx sse extension picks this up at body level).
   document.body.setAttribute('sse-connect', '/events');
-  // Auto-scroll the log to the bottom when new lines append, unless the user
-  // has scrolled up.
+
+  // Close the logs pane (called by the pane's own "close" button).
+  window.closeLogs = function () {
+    var pane = document.getElementById('logs-pane');
+    pane.innerHTML = '<div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>';
+  };
+
+  // Auto-stick the logs pane to the bottom while a download is in flight,
+  // unless the user has scrolled up to read earlier output. The scroll
+  // container (#lp-body) is never swapped by the poll, so its scrollTop
+  // survives; we only nudge it after a line-swap when stuck.
   (function () {
-    var log = document.getElementById('log');
-    var stuck = false;
-    log.addEventListener('scroll', function () {
-      stuck = log.scrollHeight - log.scrollTop - log.clientHeight > 40;
-    });
-    log.addEventListener('htmx:afterSwap', function () {
-      if (!stuck) log.scrollTop = log.scrollHeight;
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var target = e.detail && e.detail.target;
+      if (!target || target.id !== 'lp-lines') return;
+      var body = document.getElementById('lp-body');
+      if (!body) return;
+      var stuck = body.scrollHeight - body.scrollTop - body.clientHeight > 60;
+      if (!stuck) body.scrollTop = body.scrollHeight;
     });
   })();
+
   // Keep the "Download selected (N)" count in the approval list in sync with
-  // the checked checkboxes. The list is swapped in dynamically by POST
-  // /download, so listen at the document level.
+  // the checked checkboxes (the list is swapped in dynamically by POST
+  // /download, so listen at the document level).
   (function () {
     document.addEventListener('change', function (e) {
       var box = e.target;

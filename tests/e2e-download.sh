@@ -78,9 +78,9 @@ echo
 echo "=== event counts ==="
 grep -o '^event: [a-z]*' "$WORK/sse.raw" | sort | uniq -c
 echo
-echo "=== final queue event (expect 'row done') ==="
+echo "=== final queue event (expect 'card done') ==="
 awk '/^event: queue$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
-  | grep -oE 'row (done|failed)|queue \([0-9]+, [0-9]+ pending\)' | head
+  | grep -oE 'card (done|failed)|cards-count">[0-9]+ total' | head
 echo
 echo "=== last status event (expect idle 'queue empty', NOT a 0% bar) ==="
 awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
@@ -99,8 +99,8 @@ cat "$WORK/server.log"
 echo
 echo "=== assertions ==="
 fail=0
-if ! grep -q 'row done' "$WORK/sse.raw"; then
-  echo "FAIL: no 'row done' in SSE stream"; fail=1
+if ! grep -q 'card done' "$WORK/sse.raw"; then
+  echo "FAIL: no 'card done' in SSE stream"; fail=1
 fi
 if ! awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw" | grep -q 'status idle'; then
   echo "FAIL: final status is not idle"; fail=1

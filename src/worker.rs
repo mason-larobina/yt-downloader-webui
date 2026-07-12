@@ -377,6 +377,9 @@ async fn handle_line(
             if is_terminal || now.duration_since(*last_status_emit) >= STATUS_THROTTLE {
                 *last_status_emit = now;
                 need_status = true;
+                // Re-render the cards on every throttle tick so the active
+                // card's progress bar advances (not just on filename change).
+                need_queue = true;
             }
 
             if need_queue {
@@ -452,6 +455,15 @@ async fn handle_line(
             {
                 let mut ring = state.log_ring.lock().await;
                 ring.push(text.clone());
+            }
+            // Also capture the line on the item itself so the per-video
+            // logs pane can show this download's output at any point
+            // (in-progress or completed); persisted with the item.
+            {
+                let mut q = state.queue.lock().await;
+                if let Some(item) = q.get_mut(item_id) {
+                    item.push_log(text.clone());
+                }
             }
             state.emit(Event::Log(render::render_log_line(&text)));
         }
