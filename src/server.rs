@@ -45,21 +45,14 @@ const HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
 const HTMX_SSE_JS: &[u8] = include_bytes!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
 
-async fn index(State(state): State<Arc<AppState>>) -> Response {
-    // Lightweight placeholder substitution (no template engine): inject the
-    // configured download dir + cookie source into the topbar.
-    let body = INDEX_HTML
-        .replace("{{dir}}", &render::esc(&state.cfg.download_dir.display().to_string()))
-        .replace(
-            "{{cookies}}",
-            &render::esc(state.cfg.cookies_from_browser.as_deref().unwrap_or("none")),
-        );
+async fn index(State(_state): State<Arc<AppState>>) -> Response {
+    // Static page; all dynamic state arrives via SSE.
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    (StatusCode::OK, headers, body).into_response()
+    (StatusCode::OK, headers, INDEX_HTML).into_response()
 }
 
 async fn static_htmx() -> Response {
@@ -179,9 +172,7 @@ async fn post_download(
     // Anything directly enqueued needs the worker woken + a queue swap + persist.
     if direct > 0 {
         state.notify.notify_one();
-        let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
-        drop(q);
+        emit_queue_status(&state).await;
         state.persist().await;
     }
 
@@ -214,10 +205,9 @@ async fn post_download(
     }
 
     if direct > 0 {
-        return format!(
-            r#"<span class="ack">queued {direct} download{}</span>"#,
-            if direct == 1 { "" } else { "s" }
-        );
+        // No ack fragment: the live queue/progress state is shown in the
+        // floating banner (driven by the `status` SSE event).
+        return String::new();
     }
 
     // Nothing enqueued, no playlist: surface the first error.
@@ -247,7 +237,6 @@ async fn post_approve(
         return r#"<span class="err">select at least one video</span>"#.to_string();
     }
 
-    let mut n: u64 = 0;
     // (item id, thumbnail URL) pairs to fetch in the background.
     let mut thumbs: Vec<(u64, String)> = Vec::new();
     {
@@ -256,7 +245,6 @@ async fn post_approve(
             match serde_json::from_str::<ApproveEntry>(raw) {
                 Ok(e) => {
                     let id = q.enqueue(e.url, e.title, e.duration);
-                    n += 1;
                     if let Some(t) = e.thumbnail {
                         thumbs.push((id, t));
                     }
@@ -269,20 +257,16 @@ async fn post_approve(
         }
     }
     state.notify.notify_one();
-    {
-        let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
-    }
+    emit_queue_status(&state).await;
     state.persist().await;
 
     if !thumbs.is_empty() {
         spawn_thumbnail_fetches(state.clone(), thumbs);
     }
 
-    format!(
-        r#"<span class="ack">queued {n} download{}</span>"#,
-        if n == 1 { "" } else { "s" }
-    )
+    // No ack fragment: the live queue/progress state is shown in the
+    // floating banner (driven by the `status` SSE event).
+    String::new()
 }
 
 // ------------------------------ /cancel/:id --------------------------------
@@ -335,6 +319,21 @@ fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
     });
 }
 
+/// Emit a `queue` + `status` swap together. Used by request handlers after
+/// mutating the queue so the floating banner (status: pending count / active
+/// download) stays live alongside the card list.
+async fn emit_queue_status(state: &Arc<AppState>) {
+    let q = state.queue.lock().await;
+    let active = q.items.iter().find(|i| i.status == ItemStatus::Active);
+    let pending = q
+        .items
+        .iter()
+        .filter(|i| i.status == ItemStatus::Pending)
+        .count();
+    state.emit(Event::Queue(render::render_queue(&q)));
+    state.emit(Event::Status(render::render_status(active, pending)));
+}
+
 /// POST /cancel/:id -- cancel the active or pending queue item.
 async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
     enum Outcome {
@@ -367,8 +366,7 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
 
     match outcome {
         Outcome::PendingRemoved => {
-            let q = state.queue.lock().await;
-            state.emit(Event::Queue(render::render_queue(&q)));
+            emit_queue_status(&state).await;
             state.persist().await;
             format!(r#"<span id="ack">cancelled item {id}</span>"#)
         }
@@ -418,10 +416,7 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
     };
     let _ = result;
     state.notify.notify_one();
-    {
-        let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
-    }
+    emit_queue_status(&state).await;
     state.persist().await;
     format!(r#"<span id="ack">requeued item {id}</span>"#)
 }
@@ -434,10 +429,7 @@ async fn post_clear(State(state): State<Arc<AppState>>) -> String {
         let mut q = state.queue.lock().await;
         q.clear_terminal()
     };
-    {
-        let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
-    }
+    emit_queue_status(&state).await;
     state.persist().await;
     format!(r#"<span id="ack">cleared {n} item{}</span>"#, if n == 1 { "" } else { "s" })
 }
@@ -542,9 +534,7 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
         q.remove_terminal(id)
     };
     if removed {
-        let q = state.queue.lock().await;
-        state.emit(crate::events::Event::Queue(render::render_queue(&q)));
-        drop(q);
+        emit_queue_status(&state).await;
         // Refresh the library view too in case it's open elsewhere.
         let lib_frag = render::render_library_scan(&download_dir);
         state.emit(crate::events::Event::Library(lib_frag));
@@ -565,8 +555,13 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
     let (queue_frag, status_frag, library_frag, log_lines) = {
         let q = state.queue.lock().await;
         let active = q.items.iter().find(|i| i.status == ItemStatus::Active).cloned();
+        let pending = q
+            .items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Pending)
+            .count();
         let queue_frag = render::render_queue(&q);
-        let status_frag = render::render_status(active.as_ref());
+        let status_frag = render::render_status(active.as_ref(), pending);
         drop(q);
 
         let library_frag = render::render_library_scan(&state.cfg.download_dir);

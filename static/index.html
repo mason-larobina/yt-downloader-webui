@@ -15,8 +15,6 @@
   <aside class="pane pane-left">
     <header class="topbar">
       <span class="title">web-dl</span>
-      <span class="dir" title="download directory">{{dir}}</span>
-      <span class="cookies">cookies: {{cookies}}</span>
     </header>
 
     <form class="submit"
@@ -49,6 +47,10 @@
 
 </div>
 
+<!-- Floating progress banner (spotify-like). Swapped live by the `status`
+     SSE event; hidden via the `idle` class when the queue is empty. -->
+<div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>
+
 <script>
   // Global SSE connection (htmx sse extension picks this up at body level).
   document.body.setAttribute('sse-connect', '/events');
@@ -71,6 +73,21 @@
       if (!body) return;
       var stuck = body.scrollHeight - body.scrollTop - body.clientHeight > 60;
       if (!stuck) body.scrollTop = body.scrollHeight;
+    });
+  })();
+
+  // Transient ack toast: POST actions (cancel/retry/clear/delete) swap a
+  // short confirmation into #ack; auto-clear it after a few seconds so it
+  // doesn't linger. (The live queue/progress state lives in the floating
+  // banner, not here.)
+  (function () {
+    var timer = null;
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var target = e.detail && e.detail.target;
+      if (!target || target.id !== 'ack') return;
+      if (!target.textContent.trim()) return;
+      clearTimeout(timer);
+      timer = setTimeout(function () { target.textContent = ''; }, 4000);
     });
   })();
 

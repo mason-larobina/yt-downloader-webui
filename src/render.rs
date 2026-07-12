@@ -35,6 +35,27 @@ pub fn esc(input: &str) -> String {
     out
 }
 
+/// Percent-encode a filename for safe use as a single URL path segment in an
+/// `href`. Encodes everything except RFC 3986 unreserved chars
+/// (`A-Za-z0-9-._~`); notably spaces -> `%20`, and `#` / `?` / `&` / `(` /
+/// `)` / non-ASCII are encoded so they can't be misread as fragment / query /
+/// separator boundaries. The result contains no HTML-special characters,
+/// so it is safe to drop straight into a double-quoted attribute.
+pub fn url_encode_path(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for &b in input.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
 /// Format a byte count human-readably.
 pub fn human_bytes(n: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
@@ -100,64 +121,102 @@ fn human_duration(secs: Option<f64>) -> String {
 
 // ----------------------------- #status ------------------------------------
 
-/// Render the `#status` fragment: the active item's progress bar, or an idle
-/// "queue empty / waiting" line.
-pub fn render_status(active: Option<&QueueItem>) -> String {
-    match active {
-        None => r#"<div id="status" class="status idle" sse-swap="status" hx-swap="outerHTML">queue empty &mdash; waiting for URLs</div>"#
-            .to_string(),
-        Some(item) => {
-            let label = esc(item.label());
-            let p = item.progress.as_ref();
-            let percent = p.and_then(|p| p.percent()).unwrap_or(0.0);
-            let width = percent.clamp(0.0, 100.0);
-            let speed = human_speed(p.and_then(|p| p.speed));
-            let eta = human_eta(p.and_then(|p| p.eta));
-            let bytes = p.and_then(|p| {
-                let dl = p.downloaded_bytes? as u64;
-                let tot = p
-                    .total_bytes
-                    .or(p.total_bytes_estimate)
-                    .map(|x| x as u64);
-                Some(match tot {
-                    Some(tot) if tot > 0 => format!(
-                        "{} / {}",
-                        human_bytes(dl),
-                        human_bytes(tot)
-                    ),
-                    _ => human_bytes(dl),
-                })
-            });
-
-            let thumb_html = match &item.thumbnail {
-                Some(name) => format!(
-                    r##"<img class="thumb" src="/thumb/{name}" alt="" loading="lazy">"##,
-                    name = esc(name)
-                ),
-                None => String::new(),
-            };
-
-            let mut bits: Vec<String> = Vec::new();
-            if !speed.is_empty() { bits.push(speed.clone()); }
-            if !eta.is_empty() { bits.push(eta.clone()); }
-            if let Some(b) = bytes {
-                if !b.is_empty() { bits.push(b); }
-            }
-
-            format!(
-                r#"<div id="status" class="status active" sse-swap="status" hx-swap="outerHTML">{thumb}<div class="bar"><i style="width:{w:.0}%"></i></div><span class="pct">{pct:.0}%</span> <span class="label">{label}</span>{meta}</div>"#,
-                thumb = thumb_html,
-                w = width,
-                pct = percent,
-                label = label,
-                meta = if bits.is_empty() {
-                    String::new()
-                } else {
-                    format!(" <span class=\"meta\">{}</span>", bits.join(" | "))
-                }
-            )
-        }
+/// Render the `#status` fragment: a spotify-like floating banner at the
+/// bottom of the viewport showing the active download's thumbnail, title,
+/// latest yt-dlp log line, a (bigger) progress bar, duration/ETA and
+/// speed/bytes, plus a live count of pending items. When nothing is active
+/// but items are queued, it shows a compact "N queued — waiting" line; when
+/// the queue is fully idle it renders an empty (hidden) banner.
+///
+/// `pending` is the number of Pending items (drives the live queued count).
+pub fn render_status(active: Option<&QueueItem>, pending: usize) -> String {
+    // Fully idle: hide the banner.
+    if active.is_none() && pending == 0 {
+        return r#"<div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>"#
+            .to_string();
     }
+
+    // Nothing active yet, but items are waiting.
+    if active.is_none() {
+        return format!(
+            r#"<div id="status" class="banner queued" sse-swap="status" hx-swap="outerHTML"><div class="bn-body"><div class="bn-top"><span class="bn-title">Waiting&hellip;</span><span class="bn-queued">{n} queued</span></div></div></div>"#,
+            n = pending
+        );
+    }
+
+    let item = active.unwrap();
+    let label = esc(item.label());
+    let p = item.progress.as_ref();
+    let percent = p.and_then(|p| p.percent()).unwrap_or(0.0);
+    let width = percent.clamp(0.0, 100.0);
+    let speed = human_speed(p.and_then(|p| p.speed));
+    let eta = human_eta(p.and_then(|p| p.eta));
+    let bytes = p.and_then(|p| {
+        let dl = p.downloaded_bytes? as u64;
+        let tot = p
+            .total_bytes
+            .or(p.total_bytes_estimate)
+            .map(|x| x as u64);
+        Some(match tot {
+            Some(tot) if tot > 0 => format!(
+                "{} / {}",
+                human_bytes(dl),
+                human_bytes(tot)
+            ),
+            _ => human_bytes(dl),
+        })
+    });
+    let dur = human_duration(item.duration);
+
+    let thumb_html = match &item.thumbnail {
+        Some(name) => format!(
+            r##"<img class="bn-img" src="/thumb/{name}" alt="" loading="lazy">"##,
+            name = esc(name)
+        ),
+        None => r#"<div class="bn-img bn-img-placeholder"></div>"#.to_string(),
+    };
+
+    // Latest yt-dlp log line as a subtitle.
+    let log_html = match item.logs.last() {
+        Some(l) => format!(
+            r#"<div class="bn-log">{}</div>"#,
+            esc(l.trim_end_matches('\n'))
+        ),
+        None => String::new(),
+    };
+
+    let mut left_bits: Vec<String> = Vec::new();
+    if !dur.is_empty() {
+        left_bits.push(dur);
+    }
+    if !eta.is_empty() {
+        left_bits.push(format!("ETA {eta}"));
+    }
+    let mut right_bits: Vec<String> = Vec::new();
+    if !speed.is_empty() {
+        right_bits.push(speed);
+    }
+    if let Some(b) = bytes.as_ref().filter(|b| !b.is_empty()) {
+        right_bits.push(b.clone());
+    }
+
+    let queued_html = if pending > 0 {
+        format!(r#"<span class="bn-queued">{n} queued</span>"#, n = pending)
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"<div id="status" class="banner active" sse-swap="status" hx-swap="outerHTML">{thumb}<div class="bn-body"><div class="bn-top"><span class="bn-title">{label}</span>{queued}</div>{log}<div class="bn-bar"><i style="width:{w:.0}%"></i></div><div class="bn-meta"><span class="bn-left">{left}</span><span class="bn-pct">{pct:.0}%</span><span class="bn-right">{right}</span></div></div></div>"#,
+        thumb = thumb_html,
+        label = label,
+        queued = queued_html,
+        log = log_html,
+        w = width,
+        pct = percent,
+        left = left_bits.join(" &middot; "),
+        right = right_bits.join(" &middot; "),
+    )
 }
 
 // ----------------------------- #cards --------------------------------------
@@ -212,7 +271,9 @@ pub fn render_queue(queue: &Queue) -> String {
     format!(r#"{head}<div class="cards-list">{cards}</div>"#, cards = cards)
 }
 
-/// Render one video card.
+/// Render one video card. The card shows the thumbnail, a status badge, the
+/// title/duration, and (for failures) the error. Per-card progress is not
+/// shown here -- live progress lives in the floating bottom banner instead.
 fn render_card(item: &QueueItem) -> String {
     let status = item.status.as_str();
     let label = esc(item.label());
@@ -224,39 +285,6 @@ fn render_card(item: &QueueItem) -> String {
             name = esc(name)
         ),
         None => r#"<div class="card-img card-img-placeholder"></div>"#.to_string(),
-    };
-
-    // Progress bar (only meaningful while Active). For Pending we show a
-    // queued shimmer; terminal states show nothing (the badge conveys state).
-    let progress_html = match item.status {
-        ItemStatus::Active => {
-            let p = item.progress.as_ref();
-            let pct = p.and_then(|p| p.percent()).unwrap_or(0.0);
-            let width = pct.clamp(0.0, 100.0);
-            let speed = human_speed(p.and_then(|p| p.speed));
-            let eta = human_eta(p.and_then(|p| p.eta));
-            let mut bits: Vec<String> = Vec::new();
-            if !speed.is_empty() {
-                bits.push(speed);
-            }
-            if !eta.is_empty() {
-                bits.push(eta);
-            }
-            let meta = if bits.is_empty() {
-                String::new()
-            } else {
-                format!(r#"<span class="card-prog-meta">{}</span>"#, bits.join(" | "))
-            };
-            format!(
-                r#"<div class="card-prog"><div class="card-bar"><i style="width:{w:.0}%"></i></div><span class="card-prog-pct">{pct:.0}%</span>{meta}</div>"#,
-                w = width,
-                pct = pct,
-                meta = meta,
-            )
-        }
-        ItemStatus::Pending => r#"<div class="card-prog"><div class="card-bar queued"><i></i></div><span class="card-prog-pct">queued</span></div>"#
-            .to_string(),
-        _ => String::new(),
     };
 
     let overlay = render_card_overlay(item);
@@ -275,12 +303,11 @@ fn render_card(item: &QueueItem) -> String {
     };
 
     format!(
-        r##"<div class="card {status}" data-id="{id}">{thumb}<span class="card-badge {status}">{status}</span><div class="card-overlay">{overlay}</div>{prog}<div class="card-meta"><div class="card-title">{label}</div>{sub}</div>{err}</div>"##,
+        r##"<div class="card {status}" data-id="{id}"><div class="card-thumb">{thumb}<span class="card-badge {status}">{status}</span><div class="card-overlay">{overlay}</div></div><div class="card-meta"><div class="card-title">{label}</div>{sub}</div>{err}</div>"##,
         status = status,
         id = item.id,
         thumb = thumb_html,
         overlay = overlay,
-        prog = progress_html,
         label = label,
         sub = sub_html,
         err = error_html,
@@ -305,10 +332,12 @@ fn render_card_overlay(item: &QueueItem) -> String {
         ),
         ItemStatus::Done => match &item.filename {
             Some(name) => {
-                let n = esc(name);
+                let n = url_encode_path(name);
+                let disp = esc(name);
                 format!(
-                    r##"<a class="ov-btn" href="/file/{n}?download=1" title="download to this device">download</a><a class="ov-btn" href="/file/{n}?inline=1" target="_blank" rel="noopener" title="open/preview">open</a><button class="ov-btn ov-warn" hx-post="/delete-item/{id}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {n} from the server?">delete</button>"##,
+                    r##"<a class="ov-btn" href="/file/{n}?download=1" title="download to this device">download</a><a class="ov-btn" href="/file/{n}?inline=1" target="_blank" rel="noopener" title="open/preview">open</a><button class="ov-btn ov-warn" hx-post="/delete-item/{id}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {disp} from the server?">delete</button>"##,
                     n = n,
+                    disp = disp,
                     id = id
                 )
             }
@@ -392,14 +421,16 @@ pub fn render_library(files: &[LibraryFile]) -> String {
 
 fn render_library_row(f: &LibraryFile) -> String {
     let name = esc(&f.name);
+    let name_url = url_encode_path(&f.name);
     let size = human_bytes(f.size);
     let mtime = f
         .mtime
         .format(time::macros::format_description!("[year]-[month]-[day]"))
         .unwrap_or_default();
     format!(
-        r##"<div class="lrow"><span class="name">{name}</span> <span class="size">{size}</span> <span class="mtime">{mtime}</span> <a class="open" href="/file/{name}?inline=1">open</a> <a class="dl" href="/file/{name}?download=1">download</a> <button class="del" hx-post="/delete/{name}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {name}?">delete</button></div>"##,
+        r##"<div class="lrow"><span class="name">{name}</span> <span class="size">{size}</span> <span class="mtime">{mtime}</span> <a class="open" href="/file/{name_url}?inline=1">open</a> <a class="dl" href="/file/{name_url}?download=1">download</a> <button class="del" hx-post="/delete/{name_url}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {name}?">delete</button></div>"##,
         name = name,
+        name_url = name_url,
         size = size,
         mtime = mtime,
     )
@@ -572,5 +603,99 @@ mod approval_tests {
         assert!(second.title.is_none());
         assert!(second.duration.is_none());
         assert!(second.thumbnail.is_none());
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+    use crate::state::{ItemStatus, QueueItem};
+
+    fn item(status: ItemStatus, thumb: Option<&str>) -> QueueItem {
+        let mut it = QueueItem::new(7, "https://example/watch?v=x".into());
+        it.title = Some("Hello World".into());
+        it.duration = Some(123.0);
+        it.status = status;
+        it.thumbnail = thumb.map(str::to_string);
+        it
+    }
+
+    /// The card's badge + overlay buttons must be anchored to the thumbnail
+    /// (`.card-thumb`, the only `position: relative` ancestor), not the
+    /// viewport. Regression for the "overlay appeared at top-right of the
+    /// viewport" bug caused by emitting the `<img>` without the wrapper.
+    #[test]
+    fn card_wraps_thumb_and_anchors_overlay() {
+        let html = render_card(&item(ItemStatus::Done, Some("abc.jpg")));
+
+        // The thumb image + badge + overlay are all inside one .card-thumb.
+        let thumb_start = html.find("<div class=\"card-thumb\">").expect("card-thumb wrapper");
+        let thumb_end = html[thumb_start..]
+            .find("</div>")
+            .map(|e| thumb_start + e)
+            .expect("card-thumb close");
+        let thumb = &html[thumb_start..thumb_end];
+        assert!(thumb.contains("<img class=\"card-img\""), "img inside thumb");
+        assert!(thumb.contains("card-overlay"), "overlay inside thumb");
+        assert!(thumb.contains("card-badge"), "badge inside thumb");
+    }
+
+    /// The done card surfaces download/open/delete overlay buttons.
+    #[test]
+    fn done_card_overlay_has_actions() {
+        let mut it = item(ItemStatus::Done, None);
+        it.filename = Some("video.webm".into());
+        let html = render_card(&it);
+        assert!(html.contains(">download<"));
+        assert!(html.contains(">open<"));
+        assert!(html.contains(">delete<"));
+    }
+
+    /// Filenames with URL-special chars (spaces, `#`, `?`, `&`, parens) must
+    /// be percent-encoded in `/file/{name}` hrefs so the browser requests the
+    /// right path instead of truncating at `#` / starting the query at `?` /
+    /// splitting params at `&`. The visible confirm text stays human-readable.
+    #[test]
+    fn file_links_percent_encode_special_filenames() {
+        let mut it = item(ItemStatus::Done, None);
+        it.filename = Some("Video #1 (HQ) & more.webm".into());
+        let html = render_card(&it);
+
+        // href path segment is percent-encoded; no raw space / # / ? / &.
+        assert!(html.contains(r#"href="/file/Video%20%231%20%28HQ%29%20%26%20more.webm?download=1"#));
+        assert!(html.contains(r#"href="/file/Video%20%231%20%28HQ%29%20%26%20more.webm?inline=1"#));
+        assert!(!html.contains(r#"href="/file/Video #"#), "raw space/# in href");
+
+        // Confirm dialog stays human-readable (HTML-escaped, not %20).
+        assert!(html.contains(r#"hx-confirm="Delete Video #1 (HQ) &amp; more.webm from the server?"#));
+    }
+
+    /// Pending card surfaces a cancel button (not delete/open/download).
+    #[test]
+    fn pending_card_overlay_has_cancel() {
+        let html = render_card(&item(ItemStatus::Pending, None));
+        assert!(html.contains(">cancel<"));
+        assert!(!html.contains(">download<"));
+    }
+
+    /// render_status idle banner is hidden; queued banner shows the count;
+    /// active banner shows the bigger bar + thumbnail + queued count.
+    #[test]
+    fn status_banner_states() {
+        let idle = render_status(None, 0);
+        assert!(idle.contains("banner idle"));
+
+        let queued = render_status(None, 3);
+        assert!(queued.contains("banner queued"));
+        assert!(queued.contains("3 queued"));
+
+        let mut it = item(ItemStatus::Active, Some("t.jpg"));
+        it.progress = Some(crate::state::Progress::default());
+        let active = render_status(Some(&it), 2);
+        assert!(active.contains("banner active"));
+        assert!(active.contains("bn-bar"), "bigger progress bar present");
+        assert!(active.contains("/thumb/t.jpg"), "thumbnail present");
+        assert!(active.contains("2 queued"));
+        assert!(active.contains("Hello World"), "title present");
     }
 }

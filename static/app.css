@@ -42,7 +42,7 @@ em { font-style: normal; color: var(--accent); }
   display: flex;
   flex-direction: column;
 }
-.pane-left   { padding: 12px; gap: 10px; overflow-y: auto; }
+.pane-left   { padding: 12px 12px 140px; gap: 10px; overflow-y: auto; }
 .pane-cards  { background: var(--bg-2); }
 .pane-logs   { background: var(--bg); }
 
@@ -62,9 +62,6 @@ em { font-style: normal; color: var(--accent); }
   padding: 8px 10px; background: var(--bg-3); border-radius: var(--radius);
 }
 .topbar .title { font-weight: 600; }
-.topbar .dir { color: var(--muted); font-family: monospace; font-size: 12px;
-               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topbar .cookies { color: var(--muted); font-size: 12px; margin-left: auto; }
 
 /* ---------- submit ---------- */
 .submit textarea {
@@ -116,7 +113,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .cards-head .clear { margin-left: auto; }
 
 .cards-list {
-  flex: 1 1 auto; overflow-y: auto; padding: 14px;
+  flex: 1 1 auto; overflow-y: auto; padding: 14px 14px 140px;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px; align-content: start;
 }
@@ -124,14 +121,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------- card ---------- */
 .card {
-  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-2); border: 2px solid var(--line); border-radius: var(--radius);
   overflow: hidden; display: flex; flex-direction: column;
   transition: border-color 0.15s;
 }
 .card:hover { border-color: #3a4150; }
-.card.active { border-color: var(--accent-2); }
-.card.failed { border-color: #4a2b30; }
-.card.done   { border-color: #2c4030; }
+/* Status-driven border colour (thicker so the state reads at a glance). */
+.card.pending   { border-color: var(--muted); }
+.card.active    { border-color: var(--accent); }
+.card.done      { border-color: var(--ok); }
+.card.failed    { border-color: var(--err); }
+.card.cancelled { border-color: var(--warn); }
 
 .card-thumb { position: relative; aspect-ratio: 16 / 9; background: var(--bg-inset); overflow: hidden; }
 .card-img { width: 100%; height: 100%; object-fit: cover; display: block; background: var(--bar-bg); }
@@ -172,21 +172,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ov-btn.ov-ok { border-color: #345034; }
 .ov-btn.ov-ok:hover { background: #243324; }
 
-/* progress bar overlaying the thumbnail bottom */
-.card-prog {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; background: linear-gradient(transparent, rgba(0,0,0,0.7));
-}
-.card-bar {
-  flex: 1 1 auto; height: 6px; background: var(--bar-bg); border-radius: 3px; overflow: hidden;
-}
-.card-bar i { display: block; height: 100%; background: var(--bar-fg); transition: width 0.2s; }
-.card-bar.queued i { width: 35% !important; background: var(--muted);
-  animation: shim 1.4s ease-in-out infinite; }
-@keyframes shim { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
-.card-prog-pct { font-size: 11px; font-family: monospace; color: var(--fg); }
-.card-prog-meta { font-size: 11px; color: var(--muted); font-family: monospace; }
+/* progress lives in the floating bottom banner, not on the card. */
 
 .card-meta { padding: 8px 10px; }
 .card-title {
@@ -222,10 +208,58 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .lp-close:hover { color: var(--fg); background: var(--bg-3); }
 .lp-body {
-  flex: 1 1 auto; overflow-y: auto; padding: 8px 10px;
+  flex: 1 1 auto; overflow-y: auto; padding: 8px 10px 140px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   background: var(--bg-inset);
 }
 .lp-lines { white-space: pre-wrap; word-break: break-all; }
 .lp-lines .logline { color: var(--fg); }
 .lp-empty-lines { color: var(--muted); font-style: italic; }
+
+/* ---------- floating progress banner (spotify-like) ---------- */
+.banner {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 16px; z-index: 50;
+  width: min(940px, calc(100vw - 32px));
+  background: var(--bg-3); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: 0 10px 36px rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+.banner.idle { display: none; }
+.banner.queued { padding: 10px 14px; }
+.banner.active { display: flex; align-items: stretch; padding: 10px; gap: 12px; }
+
+.bn-img {
+  flex: 0 0 auto; width: 96px; height: 54px; object-fit: cover; display: block;
+  border-radius: 6px; background: var(--bar-bg);
+}
+.bn-img-placeholder { background:
+  repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 10px, var(--bg-2) 10px, var(--bg-2) 20px); }
+
+.bn-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; justify-content: center; }
+.bn-top { display: flex; align-items: center; gap: 10px; }
+.bn-title { font-weight: 600; font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
+.bn-queued {
+  flex: 0 0 auto; font-size: 11px; color: var(--muted);
+  background: var(--bg-inset); padding: 2px 9px; border-radius: 10px;
+}
+.bn-log {
+  font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Bigger progress bar than the old per-card one. */
+.bn-bar { height: 10px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
+.bn-bar i { display: block; height: 100%; background: var(--bar-fg); transition: width 0.2s; }
+
+.bn-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); font-family: monospace; }
+.bn-meta .bn-left { flex: 1 1 auto; min-width: 0; }
+.bn-meta .bn-pct { color: var(--fg); font-weight: 600; }
+.bn-meta .bn-right { flex: 0 0 auto; }
+
+@media (max-width: 760px) {
+  .banner { width: calc(100vw - 16px); bottom: 8px; }
+  .bn-img { width: 72px; height: 41px; }
+}

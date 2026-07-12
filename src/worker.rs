@@ -122,8 +122,16 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         let q = state.queue.lock().await;
         state.emit(Event::Queue(render::render_queue(&q)));
         let active = q.get(item_id).cloned();
+        let pending = q
+            .items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Pending)
+            .count();
         drop(q);
-        state.emit(Event::Status(render::render_status(active.as_ref())));
+        state.emit(Event::Status(render::render_status(
+            active.as_ref(),
+            pending,
+        )));
     }
 
     // Wire stdout + stderr into a single mpsc of lines.
@@ -326,6 +334,31 @@ async fn drain(rx: &mut mpsc::Receiver<String>) {
     }
 }
 
+/// Extract the on-disk filename yt-dlp is about to write (or just reported it
+/// already wrote) from one of its `[download]` status lines:
+///
+///   * `[download] Destination: <path>`
+///     -- emitted before yt-dlp starts writing a new file.
+///   * `[download] <path> has already been downloaded`
+///     -- emitted when the file already exists on disk; yt-dlp then exits
+///       success **without** emitting any progress JSON or a `Destination:`
+///       line, so this is the only place we learn the filename. Without it
+///       the Done card would have no `filename` and thus no download/open
+///       buttons (and the ffmpeg thumbnail fallback would be skipped).
+///
+/// Returns the bare basename (last path segment). `None` for any other line.
+fn extract_dest_filename(text: &str) -> Option<String> {
+    let path = text
+        .strip_prefix("[download] Destination:")
+        .map(|s| s.trim())
+        .or_else(|| {
+            let s = text.strip_prefix("[download] ")?;
+            let s = s.strip_suffix(" has already been downloaded")?;
+            Some(s.trim())
+        })?;
+    Some(path.rsplit('/').next().unwrap_or(path).to_string())
+}
+
 /// Handle one parsed output line: update active item + emit events.
 async fn handle_line(
     state: &Arc<AppState>,
@@ -389,8 +422,16 @@ async fn handle_line(
             if need_status {
                 let q = state.queue.lock().await;
                 let active = q.get(item_id).cloned();
+                let pending = q
+                    .items
+                    .iter()
+                    .filter(|i| i.status == ItemStatus::Pending)
+                    .count();
                 drop(q);
-                state.emit(Event::Status(render::render_status(active.as_ref())));
+                state.emit(Event::Status(render::render_status(
+                    active.as_ref(),
+                    pending,
+                )));
             }
         }
         ParsedLine::FlatEntry(_) => {
@@ -428,11 +469,9 @@ async fn handle_line(
                 }
             }
 
-            // Try to extract a filename from `[download] Destination: <path>`.
-            let dest_filename = text
-                .strip_prefix("[download] Destination:")
-                .map(|s| s.trim())
-                .map(|s| s.rsplit('/').next().unwrap_or(s).to_string());
+            // Try to extract a filename from yt-dlp's status lines (see
+            // `extract_dest_filename`).
+            let dest_filename = extract_dest_filename(&text);
 
             if let Some(f) = dest_filename {
                 let mut need_queue = false;
@@ -466,6 +505,25 @@ async fn handle_line(
                 }
             }
             state.emit(Event::Log(render::render_log_line(&text)));
+
+            // Live-update the banner's latest-log-line subtitle. yt-dlp can
+            // be chatty, so reuse the same throttle as progress ticks.
+            let now = std::time::Instant::now();
+            if now.duration_since(*last_status_emit) >= STATUS_THROTTLE {
+                *last_status_emit = now;
+                let q = state.queue.lock().await;
+                let active = q.get(item_id).cloned();
+                let pending = q
+                    .items
+                    .iter()
+                    .filter(|i| i.status == ItemStatus::Pending)
+                    .count();
+                drop(q);
+                state.emit(Event::Status(render::render_status(
+                    active.as_ref(),
+                    pending,
+                )));
+            }
         }
     }
 }
@@ -485,7 +543,15 @@ async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
             .and_then(|id| q.get(id))
             .filter(|i| i.status == ItemStatus::Active)
             .cloned();
-        (render::render_queue(&q), render::render_status(active.as_ref()))
+        let pending = q
+            .items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Pending)
+            .count();
+        (
+            render::render_queue(&q),
+            render::render_status(active.as_ref(), pending),
+        )
     };
     state.emit(Event::Status(status_frag));
     state.emit(Event::Queue(queue_frag));
@@ -635,5 +701,48 @@ pub async fn probe(state: &Arc<AppState>, url: &str) -> ProbeOutcome {
                 ))
             }
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `[download] Destination: <path>` yields the bare basename.
+    #[test]
+    fn extract_dest_filename_destination() {
+        assert_eq!(
+            extract_dest_filename("[download] Destination: /tmp/redl/Video.mp4"),
+            Some("Video.mp4".to_string())
+        );
+        // Leading/trailing whitespace tolerated.
+        assert_eq!(
+            extract_dest_filename("[download] Destination:   /a/b/Cool Clip.webm  "),
+            Some("Cool Clip.webm".to_string())
+        );
+    }
+
+    /// `[download] <path> has already been downloaded` is the line yt-dlp
+    /// prints when re-downloading a URL whose file already exists. It emits
+    /// no progress JSON and no `Destination:` line, so this is the only
+    /// source of the filename -- without it the Done card has no download /
+    /// open buttons. Regression for the reported bug.
+    #[test]
+    fn extract_dest_filename_already_downloaded() {
+        assert_eq!(
+            extract_dest_filename(
+                "[download] /tmp/redl/Big Buck Bunny [aqz-KE-bpKQ].mp4 has already been downloaded"
+            ),
+            Some("Big Buck Bunny [aqz-KE-bpKQ].mp4".to_string())
+        );
+    }
+
+    /// Unrelated log lines yield no filename.
+    #[test]
+    fn extract_dest_filename_other_lines() {
+        assert_eq!(extract_dest_filename("[youtube] aqz-KE-bpKQ: Downloading webpage"), None);
+        assert_eq!(extract_dest_filename("[info] aqz-KE-bpKQ: Downloading 1 format(s): 399+258"), None);
+        assert_eq!(extract_dest_filename("ERROR: video unavailable"), None);
+        assert_eq!(extract_dest_filename(""), None);
     }
 }
