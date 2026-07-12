@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>web-dl</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx-ext-sse.js"></script>
+</head>
+<body hx-ext="sse">
+<header class="topbar">
+  <span class="title">web-dl</span>
+  <span class="sep">&rarr;</span>
+  <span class="dir" id="dir"></span>
+  <span class="sep">|</span>
+  <span class="cookies">cookies: <span id="cookies"></span></span>
+  <span class="sep">|</span>
+  <a class="refresh-library" href="#" hx-get="/library" hx-target="#library" hx-swap="outerHTML">refresh library</a>
+</header>
+
+<section class="submit">
+  <form hx-post="/download" hx-target="#ack" hx-swap="innerHTML"
+        hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
+    <textarea name="urls" rows="5"
+              placeholder="paste one URL per line&#10;https://..."></textarea>
+    <div class="actions">
+      <button type="submit" id="dl-btn">Download</button>
+      <span id="ack" class="ack"></span>
+    </div>
+  </form>
+</section>
+
+<section id="output" class="output">
+  <div id="status" sse-swap="status" hx-swap="outerHTML"
+       class="status idle">connecting&hellip;</div>
+
+  <div id="queue" sse-swap="queue" hx-swap="innerHTML" class="queue">
+    <div class="empty">connecting&hellip;</div>
+  </div>
+
+  <div id="log-wrap" class="log-wrap">
+    <div class="lhead">log</div>
+    <div id="log" class="log">
+      <div sse-swap="log" hx-swap="beforeend"></div>
+    </div>
+  </div>
+
+  <div id="library" sse-swap="library" hx-swap="innerHTML" class="library">
+    <div class="empty">connecting&hellip;</div>
+  </div>
+</section>
+
+<script>
+  // The SSE connection is established by htmx's sse extension when an element
+  // has hx-ext="sse" + sse-connect. We attach it here so it lives at the body
+  // level (global, app-lifetime) and every swap target below participates.
+  document.body.setAttribute('sse-connect', '/events');
+  // Auto-scroll the log to the bottom when new lines append, unless the user
+  // has scrolled up.
+  (function () {
+    var log = document.getElementById('log');
+    var stuck = false;
+    log.addEventListener('scroll', function () {
+      stuck = log.scrollHeight - log.scrollTop - log.clientHeight > 40;
+    });
+    log.addEventListener('htmx:afterSwap', function () {
+      if (!stuck) log.scrollTop = log.scrollHeight;
+    });
+  })();
+</script>
+</body>
+</html>

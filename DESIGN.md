@@ -638,13 +638,7 @@ Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
 
 ## 11. Risks / open questions
 
-- **`--progress-template '%(progress)j'` exact semantics.** The `%(progress)j`
-  outtmpl is documented and widely used, but we should verify on the target
-  yt-dlp version that it (a) emits one JSON object per tick and (b) respects
-  `--newline` for newline-termination rather than `\r`. If `\r` is still used,
-  fall back to byte-level `\r`-aware splitting in `parse.rs` (cheap to add).
-  Mitigation: an integration test that runs yt-dlp against a tiny sample URL
-  and asserts we can parse the stream end-to-end.
+- **`--progress-template '%(progress)j'` exact semantics.** **RESOLVED by validation against yt-dlp 2026.07.04.** Confirmed that `%(progress)j` emits exactly one JSON object per progress tick, and that `--newline` makes each tick `\n`-terminated (no `\r`), so line-based parsing in `parse.rs` works as designed. stdout carries the progress JSON plus `[generic]`/`[info]`/`[download] Destination:` info lines; stderr carries `WARNING:`/`ERROR:`. The merged stdout+stderr line stream (Sec. 4) is therefore correct. One nuance surfaced and is handled: yt-dlp prints a `status: "error"` progress JSON only for *mid-download* aborts; extraction/format failures (e.g. "Video unavailable") print `ERROR: ...` to stderr and exit non-zero with no error progress event. The worker harvests `ERROR:` lines into `item.error` so the queue row surfaces the real reason rather than a generic "exited with status 1".
 - **SSE swap churn (decided).** Status/queue/log are rendered via htmx
   `sse-swap` fragments from the start (Sec. 6). If re-rendering the `#status`
   fragment ~5x/s proves visually janky in practice, the fallback is a ~10-line
