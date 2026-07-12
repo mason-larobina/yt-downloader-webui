@@ -39,7 +39,7 @@ echo "=== starting server on 127.0.0.1:$PORT ==="
 # --timeout caps the server's lifetime just past the SSE capture window so it
 # self-terminates even if the test hangs; we `wait` on it for its exit status.
 HOME="$WORK" "$BIN" \
-  --download-dir "$DL" --state-file "$STATE/queue.json" \
+  --download-dir "$DL" --state-dir "$STATE" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
   --timeout $((TIMEOUT + 15)) \
   > "$WORK/server.log" 2>&1 &
@@ -88,8 +88,9 @@ echo
 echo "=== files in download dir ==="
 ls -la "$DL"
 echo
-echo "=== state file ==="
-cat "$STATE/queue.json"
+echo "=== state dir (one <ts>.json per item) ==="
+ls -la "$STATE"
+for f in "$STATE"/*.json; do echo "--- $f ---"; cat "$f"; done
 echo
 echo "=== server log ==="
 cat "$WORK/server.log"

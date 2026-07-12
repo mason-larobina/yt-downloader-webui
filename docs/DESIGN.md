@@ -102,10 +102,10 @@ web-dl [OPTIONS]
                                flag). Default: firefox. Use "none" to
                                disable cookies entirely.
       --yt-dlp <PATH>          Path to yt-dlp binary. Default: yt-dlp (PATH).
-      --state-file <PATH>      Queue persistence file. Default:
-                               ~/.local/share/web-dl/queue.json. Resolved
-                               via the home/dir crate; parent dir created.
-                               Set to a tmpfs path for non-persistence.
+      --state-dir <DIR>        Queue persistence directory (one JSON file
+                               per item, named <unix_ts>.json). Default:
+                               ~/.local/share/web-dl/queue/. Resolved via
+                               the home/dir crate; created at startup.
       --bind <ADDR>             Bind address (host:port). Default:
                                127.0.0.1:8080 (loopback). Use
                                0.0.0.0:<port> to listen on all
@@ -134,15 +134,17 @@ and `StandardError=journal` (the latter is the default for user units).
 
 `~/Downloads` is resolved via the `HOME` env var (falling back to the process's
 home as reported by the `home`/`dirs` crate). The resolved path is created if
-missing. The `--state-file` default (`~/.local/share/web-dl/queue.json`) is
-resolved the same way; its parent directory is created at startup.
+missing. The `--state-dir` default (`~/.local/share/web-dl/queue/`) is
+resolved the same way; the directory is created at startup.
 
-Before serving, the app **loads `queue.json`** (Sec. 8) and reconstructs the
-in-memory queue: pending items are re-queued, any item left `Active` (a crash)
-becomes `Pending` to be re-started, and done/failed/cancelled items are kept
-as history. The worker is then notified if anything is pending. If the file is
-missing it starts empty; if it fails to parse it is moved aside to
-`queue.json.bad-<ts>` and a fresh empty queue starts, with a `warn!` log.
+Before serving, the app **loads every `<ts>.json` in the state dir** (Sec. 8)
+and reconstructs the in-memory queue, ordered FIFO by enqueue timestamp:
+pending items are re-queued, any item left `Active` (a crash) becomes
+`Pending` to be re-started, and done/failed/cancelled items are kept as
+history. The worker is then notified if anything is pending. If the directory
+is missing it starts empty; if a per-item file fails to parse it is moved
+aside to `<name>.bad-<ts>` and the rest of the queue still loads, with a
+`warn!` log.
 
 ---
 
@@ -294,7 +296,7 @@ ignored) and renders an HTML fragment `<div id="library">...</div>` listing
 them -- one row per file with name, size (human-readable), and mtime, plus
 `[open]`, `[download]`, and `[delete]` controls. Returned as a fragment so it can
 be swapped in by htmx on demand (the `[refresh]` button) or by a `library` SSE
-event. The library is deliberately decoupled from `queue.json`: it reflects
+event. The library is deliberately decoupled from the state dir: it reflects
 *what exists on disk*, not *what was queued*, so files added or removed
 out-of-band simply show up / disappear on the next scan. (See Sec. 11 for the
 consequent drift.)
@@ -506,11 +508,16 @@ queue view shows recent history; pending + active are always retained. The
 `[ clear ]` button (Sec. 6 `/clear`) lets the operator drop the terminal items
 explicitly in v1.
 
-### Persistence (queue.json)
+### Persistence (one `<ts>.json` per item)
 
-The queue is persisted to a single JSON file (path from `--state-file`, default
-`~/.local/share/web-dl/queue.json`). The serialized form is a thin, stable
-projection of the in-memory structs:
+The queue is persisted as **one JSON file per item** in the state directory
+(path from `--state-dir`, default `~/.local/share/web-dl/queue/`). Each file is
+named `<unix_ts>.json`, where the timestamp is the item's enqueue second; if
+a file with that timestamp already exists the filename timestamp is
+**numerically incremented** (`<ts>.json`, `<ts+1>.json`, ...) until a free slot
+is found -- so two URLs enqueued in the same second get distinct, contiguous
+filenames and FIFO ordering by filename equals FIFO by enqueue time. The
+serialized form of each file is a thin, stable projection of one item:
 
 ```json
 {
@@ -518,32 +525,32 @@ projection of the in-memory structs:
   "next_id": 42,
   "items": [
     { "id": 7, "url": "https://...",
-      "status": "pending",
-      "filename": null,
-      "error": null,
-      "enqueued_at": "2026-07-11T22:54:01Z" },
-    { "id": 6, "url": "https://...",
-      "status": "done",
-      "filename": "video.webm",
-      "error": null,
-      "enqueued_at": "2026-07-11T22:50:33Z" }
-  ]
-}
+    "status": "pending",
+    "filename": null,
+    "error": null,
+    "enqueued_at": "2026-07-11T22:54:01Z" }
 ```
 
-`progress` and `cancel` are **runtime-only** and never serialized; on restart
-`progress` is `None` until the worker re-runs the item.
+File `1720731241.json` would be the item above; a second URL enqueued in the
+same second lands in `1720731242.json`, and so on. `progress` and `cancel` are
+**runtime-only** and never serialized; on restart `progress` is `None` until
+the worker re-runs the item.
 
-**Write strategy.** The file is rewritten on every *structural* queue
+**Write strategy.** The state dir is reconciled on every *structural* queue
 mutation -- enqueue, status transition (start/finish/fail/cancel), retry,
-clear, and the startup requeue. It is **not** written on progress ticks
+clear, the startup requeue, and the shutdown flush. Reconciliation **mirrors
+the live queue**: each item is (re)written to its own file (reusing its
+existing file when one already exists, otherwise allocating the next free
+`<ts>.json`), and any file whose id is no longer in the queue (cleared /
+history-trimmed items) is deleted. It is **not** written on progress ticks
 (throttled to ~5/s already, but transient by nature and meaningless across
-restarts). Writes are atomic: serialize to `<file>.tmp`, `fsync`, then rename
-over the target, so a crash mid-write leaves either the previous or the new
-version, never a truncated half-file. There is no separate write thread --
-the mutation already holds the queue lock, so it serializes, serializes, and
-renames inline; at this workload (a few writes per session) the cost is
-negligible. A final flush is performed during shutdown (below).
+restarts). Each file write is atomic: serialize to `<file>.json.tmp`, `fsync`,
+then rename over the target, so a crash mid-write leaves either the previous
+or the new version of that item, never a truncated half-file. There is no
+separate write thread -- the mutation already holds the queue lock, so it
+serializes, writes, and renames inline; at this workload (a few writes per
+session) the cost is negligible. A final flush is performed during shutdown
+(below).
 
 **Load / restart semantics on next startup:**
 
@@ -576,8 +583,8 @@ shutdown:
 4. In-flight `/events` SSE streams are dropped (each `Sse` stream is selected
    against the same shutdown token so connections close promptly rather than
    hanging).
-5. The queue is **flushed to `queue.json`** one last time (atomic write) so
-   every pending item and the re-queued active item survive. `pending` items
+5. The queue is **flushed to the state dir** one last time (reconciliation)
+   so every pending item and the re-queued active item survive. `pending` items
    are kept as-is; `active` is now `pending`; a `warn!` log reports how many
    items are queued for re-start.
 
@@ -627,7 +634,7 @@ web-dl/
 |   +-- main.rs           // clap CLI -> Config -> start server
 |   +-- config.rs         // Config, defaults (~ expansion, addr, browser)
 |   +-- state.rs          // AppState, Queue, QueueItem, ItemStatus
-|   +-- persist.rs        // load/save queue.json (atomic write, restart requeue)
+|   +-- persist.rs        // load/save one <ts>.json per item (reconcile dir, restart requeue)
 |   +-- library.rs        // scan download_dir, serve /file/:name, /delete/:name
 |   +-- worker.rs         // single background worker loop (drain queue, run yt-dlp)
 |   +-- server.rs         // axum routes: / , /static, /download, /events
@@ -678,15 +685,19 @@ Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
   worker `select!` branch `child.kill()`s the process. Pending items are removed
   straight from the queue without involving the worker. `[ retry ]` re-enqueues
   a cancelled/failed item at the back; `[ clear ]` drops terminal items.
-- **Persistence robustness.** Writes are atomic (temp + fsync + rename), so a
-  crash mid-write cannot corrupt the file -- the worst case is losing the last
-  structural mutation (the previous good file remains). The `"version"` field
-  lets a future schema migration detect and migrate older files; an unknown
-  higher version on load is rejected with a `warn!` (and the file moved aside
-  as for a parse error) rather than silently downgraded. The one gap is that the
-  file and the download directory can drift if a `done` item's file is deleted
-  out-of-band -- persistence tracks *what was queued*, not *what exists on disk*;
-  re-running a `done` item is a `[ retry ]` (re-download), not a verify.
+- **Persistence robustness.** Per-item writes are atomic (temp + fsync +
+  rename), so a crash mid-write cannot corrupt that item's file -- the worst
+  case is losing the last structural mutation to that one item (its previous
+  good file remains). A crash mid-reconciliation can leave a few orphaned
+  files for items that were being cleared/trimmed; these are deleted on the
+  next reconciliation and are harmless on load (still-valid item files). The
+  `"version"` field in each file lets a future schema migration detect and
+  migrate older item files; an unknown higher version on load is rejected with
+  a `warn!` (and that item's file moved aside as for a parse error) rather than
+  silently downgraded. The one gap is that the state dir and the download
+  directory can drift if a `done` item's file is deleted out-of-band --
+  persistence tracks *what was queued*, not *what exists on disk*; re-running a
+  `done` item is a `[ retry ]` (re-download), not a verify.
 - **Library vs. queue drift.** The library scans the directory; the queue
   tracks jobs. They are intentionally decoupled, so a `done` queue item whose
   file was deleted (or a file dropped in by hand) shows up inconsistently

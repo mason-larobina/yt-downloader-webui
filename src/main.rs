@@ -35,14 +35,14 @@ async fn main() -> Result<()> {
 
     tracing::info!(
         download_dir = %cfg.download_dir.display(),
-        state_file = %cfg.state_file.display(),
+        state_dir = %cfg.state_dir.display(),
         addr = %cfg.addr,
         cookies = cfg.cookies_from_browser.as_deref().unwrap_or("none"),
         "web-dl starting"
     );
 
     // Load persisted queue (restart requeue: active -> pending).
-    let queue = persist::load(&cfg.state_file).await?;
+    let queue = persist::load(&cfg.state_dir).await?;
     let pending = queue
         .items
         .iter()

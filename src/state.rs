@@ -43,15 +43,17 @@ impl AppState {
         let _ = self.events.send(ev);
     }
 
-    /// Persist the current queue to `queue.json` (clone-snapshot under lock,
-    /// write outside the lock). Logs a warning on failure.
+    /// Persist the current queue to the state dir (one `<ts>.json` per item;
+    /// clone-snapshot under lock, write outside the lock). Reconciles the dir
+    /// to mirror the live queue: (re)writes each item's file and deletes
+    /// orphaned files for cleared / trimmed items. Logs a warning on failure.
     pub async fn persist(&self) {
         let (next_id, items) = {
             let mut q = self.queue.lock().await;
             q.trim_history();
             (q.next_id, q.items.clone())
         };
-        if let Err(e) = crate::persist::save(&self.cfg.state_file, next_id, &items).await {
+        if let Err(e) = crate::persist::save(&self.cfg.state_dir, next_id, &items).await {
             tracing::warn!("failed to persist queue: {e:#}");
         }
     }

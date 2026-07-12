@@ -21,9 +21,10 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", default_value = "yt-dlp")]
     pub yt_dlp: String,
 
-    /// Queue persistence file. Default: ~/.local/share/web-dl/queue.json
-    #[arg(long, value_name = "PATH")]
-    pub state_file: Option<String>,
+    /// Queue persistence directory (one JSON file per item). Default:
+    /// ~/.local/share/web-dl/queue/
+    #[arg(long, value_name = "DIR")]
+    pub state_dir: Option<String>,
 
     /// Bind address (host:port). Default: 127.0.0.1:8080 (loopback). Use
     /// 0.0.0.0:<port> to listen on all interfaces -- DANGEROUS; prints a warning.
@@ -46,7 +47,7 @@ pub struct Config {
     pub download_dir: PathBuf,
     pub cookies_from_browser: Option<String>,
     pub yt_dlp: String,
-    pub state_file: PathBuf,
+    pub state_dir: PathBuf,
     pub addr: SocketAddr,
     pub timeout: Option<u64>,
 }
@@ -71,17 +72,12 @@ impl Cli {
             Some(self.cookies_from_browser.clone())
         };
 
-        let state_file = match self.state_file {
+        let state_dir = match self.state_dir {
             Some(s) => expand_tilde(&s, &home),
-            None => {
-                let p = home.join(".local").join("share").join("web-dl").join("queue.json");
-                p
-            }
+            None => home.join(".local").join("share").join("web-dl").join("queue"),
         };
-        if let Some(parent) = state_file.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create state dir: {}", parent.display()))?;
-        }
+        fs::create_dir_all(&state_dir)
+            .with_context(|| format!("failed to create state dir: {}", state_dir.display()))?;
 
         let addr: SocketAddr = self
             .bind
@@ -109,7 +105,7 @@ impl Cli {
             download_dir,
             cookies_from_browser,
             yt_dlp: self.yt_dlp,
-            state_file,
+            state_dir,
             addr,
             timeout: self.timeout,
         })

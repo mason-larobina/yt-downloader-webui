@@ -53,7 +53,7 @@ fi
 # done; we then `wait` on it for its exit status. A short readiness probe
 # replaces the old fixed `sleep 1.5`.
 HOME="$WORK" "$BIN" \
-  --download-dir "$DL" --state-file "$STATE/queue.json" \
+  --download-dir "$DL" --state-dir "$STATE" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
   --timeout 20 \
   > "$WORK/server.log" 2>&1 &

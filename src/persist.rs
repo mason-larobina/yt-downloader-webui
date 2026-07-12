@@ -1,7 +1,20 @@
-//! Atomic load/save of the queue to `queue.json`, with restart requeue.
+//! Per-item JSON persistence: one file per queue item, named
+//! `<unix_ts>.json` where the timestamp is the item's enqueue time. When two
+//! items share the same second the filename timestamp is **numerically
+//! incremented** (`<ts>.json`, `<ts+1>.json`, ...) until a free slot is found.
+//!
+//! On startup every `*.json` in the state dir is loaded; the queue is ordered
+//! FIFO by enqueue timestamp (then by id for stability). Restart requeue
+//! (`active` -> `pending`) is applied on load.
+//!
+//! `save` reconciles the directory to **mirror the live queue**: each item is
+//! (re)written to its own file, and files whose id is no longer in the queue
+//! (cleared / history-trimmed items) are deleted. Writes are atomic per file
+//! (`.json.tmp` + fsync + rename).
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339 as Rfc3339Fmt;
 use time::OffsetDateTime;
@@ -11,16 +24,10 @@ use crate::state::{ItemStatus, Queue, QueueItem};
 
 const STATE_VERSION: u64 = 1;
 
-/// The serialized projection of the queue (per DESIGN Sec. 8).
-#[derive(Serialize, Deserialize)]
-struct StateFile {
-    version: u64,
-    next_id: u64,
-    items: Vec<SerializedItem>,
-}
-
+/// The serialized projection of a single queue item. One per file.
 #[derive(Serialize, Deserialize)]
 struct SerializedItem {
+    version: u64,
     id: u64,
     url: String,
     status: String,
@@ -29,160 +36,250 @@ struct SerializedItem {
     enqueued_at: String,
 }
 
-/// Load `queue.json`, reconstruct the in-memory queue, and apply restart
-/// semantics: `active` -> `pending`; `pending` -> `pending`; terminal items
-/// kept as history. On parse error the file is moved aside to
-/// `queue.json.bad-<ts>` and an empty queue starts.
-pub async fn load(path: &Path) -> Result<Queue> {
-    let bytes = match tokio::fs::read(path).await {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!("state file absent; starting with empty queue");
-            return Ok(Queue::new());
-        }
+/// Load every `<ts>.json` file in `dir`, reconstruct the in-memory queue, and
+/// apply restart semantics (`active` -> `pending`). Items are ordered FIFO by
+/// `enqueued_at` (then `id`). A per-file parse error moves that single file
+/// aside to `<name>.bad-<ts>`; the rest of the queue still loads.
+pub async fn load(dir: &Path) -> Result<Queue> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
         Err(e) => {
-            return Err(e).with_context(|| format!("reading state file {}", path.display()));
+            return Err(e)
+                .with_context(|| format!("reading state dir {}", dir.display()));
         }
     };
 
-    let state: StateFile = match serde_json::from_slice(&bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            let bad = move_aside(path).await?;
-            tracing::warn!(
-                "state file {} failed to parse ({}); moved aside to {} -- starting empty",
-                path.display(),
-                e,
-                bad.display()
-            );
-            return Ok(Queue::new());
-        }
-    };
-
-    if state.version > STATE_VERSION {
-        let bad = move_aside(path).await?;
-        tracing::warn!(
-            "state file {} has unknown version {} (expected <= {}); moved aside to {} -- starting empty",
-            path.display(),
-            state.version,
-            STATE_VERSION,
-            bad.display()
-        );
-        return Ok(Queue::new());
-    }
-
-    let mut queue = Queue::new();
-    queue.next_id = state.next_id.max(1);
-
-    for s in state.items {
-        let status = match s.status.as_str() {
-            "pending" => ItemStatus::Pending,
-            "active" => ItemStatus::Pending, // re-queue
-            "done" => ItemStatus::Done,
-            "failed" => ItemStatus::Failed,
-            "cancelled" => ItemStatus::Cancelled,
-            other => {
-                tracing::warn!("unknown item status {other:?} for item {}; skipping", s.id);
-                continue;
-            }
+    let mut items: Vec<QueueItem> = Vec::new();
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
         };
-        let enqueued_at = OffsetDateTime::parse(
-            &s.enqueued_at,
-            &Rfc3339Fmt,
-        )
-        .unwrap_or_else(|_| OffsetDateTime::now_utc());
-
-        queue.items.push(QueueItem {
-            id: s.id,
-            url: s.url,
-            status,
-            filename: s.filename,
-            progress: None, // runtime-only
-            error: s.error,
-            cancel: None,
-            enqueued_at,
-        });
-        if s.id >= queue.next_id {
-            queue.next_id = s.id + 1;
+        // Only consume `<digits>.json`; skip temp / moved-aside files.
+        if !is_state_file(name) {
+            continue;
+        }
+        match load_one(&path).await {
+            Ok(item) => items.push(item),
+            Err(e) => {
+                let bad = move_aside(&path).await?;
+                tracing::warn!(
+                    "state file {} failed to load ({}); moved aside to {} -- skipping this item",
+                    path.display(),
+                    e,
+                    bad.display()
+                );
+            }
         }
     }
+
+    // FIFO by enqueue time; id breaks ties (and survives same-second enqueues).
+    items.sort_by(|a, b| {
+        a.enqueued_at
+            .cmp(&b.enqueued_at)
+            .then(a.id.cmp(&b.id))
+    });
+
+    let max_id = items.iter().map(|i| i.id).max().unwrap_or(0);
+    let mut queue = Queue::new();
+    queue.next_id = max_id.max(1) + 1;
+    queue.items = items;
 
     tracing::info!(
         "loaded queue: {} items, {} pending",
         queue.items.len(),
-        queue.items.iter().filter(|i| i.status == ItemStatus::Pending).count()
+        queue
+            .items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Pending)
+            .count()
     );
     Ok(queue)
 }
 
-/// Atomically save the queue to `path` (serialize to `.tmp`, fsync, rename).
-/// Takes a snapshot so callers need not hold the queue lock across the write.
-pub async fn save(path: &Path, next_id: u64, items: &[QueueItem]) -> Result<()> {
-    let items: Vec<SerializedItem> = items
-        .iter()
-        .map(|i| SerializedItem {
-            id: i.id,
-            url: i.url.clone(),
-            status: i.status.as_str().to_string(),
-            filename: i.filename.clone(),
-            error: i.error.clone(),
-            enqueued_at: i.enqueued_at.format(&Rfc3339Fmt).unwrap_or_default(),
-        })
-        .collect();
+/// Parse one `<ts>.json` into a `QueueItem` (applying `active` -> `pending`).
+async fn load_one(path: &Path) -> Result<QueueItem> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("reading {}", path.display()))?;
+    let s: SerializedItem =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
 
-    let state = StateFile {
-        version: STATE_VERSION,
-        next_id,
-        items,
-    };
-
-    let json = serde_json::to_vec_pretty(&state).context("serializing queue")?;
-
-    let tmp = path.with_extension("json.tmp");
-    // Write temp file in the same directory as the target so the rename is atomic.
-    let tmp = ensure_sibling(path, &tmp);
-
-    {
-        let mut f = tokio::fs::File::create(&tmp).await.with_context(|| {
-            format!("creating temp state file {}", tmp.display())
-        })?;
-        f.write_all(&json).await?;
-        f.sync_all().await?;
+    if s.version > STATE_VERSION {
+        bail!(
+            "unknown version {} (expected <= {})",
+            s.version,
+            STATE_VERSION
+        );
     }
 
-    tokio::fs::rename(&tmp, path)
+    let status = match s.status.as_str() {
+        "pending" => ItemStatus::Pending,
+        "active" => ItemStatus::Pending, // re-queue on restart
+        "done" => ItemStatus::Done,
+        "failed" => ItemStatus::Failed,
+        "cancelled" => ItemStatus::Cancelled,
+        other => bail!("unknown item status {other:?}"),
+    };
+
+    let enqueued_at =
+        OffsetDateTime::parse(&s.enqueued_at, &Rfc3339Fmt)
+            .unwrap_or_else(|_| OffsetDateTime::now_utc());
+
+    Ok(QueueItem {
+        id: s.id,
+        url: s.url,
+        status,
+        filename: s.filename,
+        progress: None,
+        error: s.error,
+        cancel: None,
+        enqueued_at,
+    })
+}
+
+/// Reconcile `dir` to mirror the live queue. Each item is (re)written to its
+/// own `<ts>.json` (reusing the item's existing file when one exists;
+/// otherwise allocating `<enqueued_at_ts>.json`, bumping numerically on
+/// collision). Files whose id is no longer in `items` (cleared / trimmed) are
+/// deleted. Takes a snapshot so callers need not hold the queue lock across
+/// the write.
+pub async fn save(dir: &Path, _next_id: u64, items: &[QueueItem]) -> Result<()> {
+    tokio::fs::create_dir_all(dir)
         .await
-        .with_context(|| format!("renaming temp state file into {}", path.display()))?;
+        .with_context(|| format!("creating state dir {}", dir.display()))?;
+
+    // Map existing file id -> path, and the set of taken filename timestamps.
+    let existing = scan_existing(dir).await;
+    let mut taken_ts: HashSet<i64> = existing
+        .values()
+        .filter_map(|p| filename_ts(p))
+        .collect();
+
+    let live_ids: HashSet<u64> = items.iter().map(|i| i.id).collect();
+
+    // (Re)write each live item to its file.
+    for item in items {
+        let path = match existing.get(&item.id) {
+            Some(p) => p.clone(),
+            None => {
+                // Allocate a free <ts>.json starting at the enqueue second.
+                let mut ts = item.enqueued_at.unix_timestamp();
+                while taken_ts.contains(&ts) {
+                    ts += 1;
+                }
+                taken_ts.insert(ts);
+                dir.join(format!("{ts}.json"))
+            }
+        };
+        write_item(&path, item).await?;
+    }
+
+    // Delete orphaned files (ids no longer in the queue -- cleared / trimmed).
+    for (id, path) in &existing {
+        if !live_ids.contains(id) && let Err(e) = tokio::fs::remove_file(path).await {
+            tracing::debug!("could not remove orphaned state file {}: {e}", path.display());
+        }
+    }
 
     Ok(())
 }
 
-/// Ensure `tmp` is in the same directory as `dst` (so rename is atomic). Falls
-/// back to a sibling filename next to `dst`.
-fn ensure_sibling(dst: &Path, tmp: &Path) -> PathBuf {
-    if tmp.parent() == dst.parent() {
-        return tmp.to_path_buf();
+/// Scan `dir` for `<digits>.json` files and map `id -> path` by parsing each.
+async fn scan_existing(dir: &Path) -> HashMap<u64, PathBuf> {
+    let mut map = HashMap::new();
+    let mut rd = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(_) => return map,
+    };
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !is_state_file(name) {
+            continue;
+        }
+        if let Ok(bytes) = tokio::fs::read(&path).await
+            && let Ok(s) = serde_json::from_slice::<SerializedItem>(&bytes)
+        {
+            map.insert(s.id, path);
+        }
+        // Unparseable files are left alone; `load` moves them aside.
     }
-    // Fall back: <dst>.tmp in the same dir.
-    let name = dst
-        .file_name()
-        .map(|n| {
-            let mut n = n.to_os_string();
-            n.push(".tmp");
-            n
-        })
-        .unwrap_or_else(|| std::ffi::OsString::from("queue.json.tmp"));
-    dst.with_file_name(name)
+    map
 }
 
-/// Move `path` aside to `path.bad-<unix_ts>`. Returns the new path.
+/// Atomically write one item to `path` (serialize to `.json.tmp`, fsync, rename).
+async fn write_item(path: &Path, item: &QueueItem) -> Result<()> {
+    let s = SerializedItem {
+        version: STATE_VERSION,
+        id: item.id,
+        url: item.url.clone(),
+        status: item.status.as_str().to_string(),
+        filename: item.filename.clone(),
+        error: item.error.clone(),
+        enqueued_at: item
+            .enqueued_at
+            .format(&Rfc3339Fmt)
+            .unwrap_or_default(),
+    };
+    let json = serde_json::to_vec_pretty(&s).context("serializing item")?;
+
+    let tmp = sibling_tmp(path);
+    {
+        let mut f = tokio::fs::File::create(&tmp)
+            .await
+            .with_context(|| format!("creating temp state file {}", tmp.display()))?;
+        f.write_all(&json).await?;
+        f.sync_all().await?;
+    }
+    tokio::fs::rename(&tmp, path)
+        .await
+        .with_context(|| format!("renaming temp state file into {}", path.display()))?;
+    Ok(())
+}
+
+/// `<dir>/<name>.json` -> `<dir>/<name>.json.tmp` (kept sibling for atomic rename).
+fn sibling_tmp(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("item.json"));
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// True for filenames of the form `<digits>.json` (excludes `.tmp` / `.bad-*`).
+fn is_state_file(name: &str) -> bool {
+    let stem = match name.strip_suffix(".json") {
+        Some(s) => s,
+        None => return false,
+    };
+    !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Parse the leading numeric timestamp from a `<digits>.json` filename.
+fn filename_ts(path: &Path) -> Option<i64> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".json")?;
+    stem.parse::<i64>().ok()
+}
+
+/// Move `path` aside to `<name>.bad-<unix_ts>`. Returns the new path.
 async fn move_aside(path: &Path) -> Result<PathBuf> {
     let ts = OffsetDateTime::now_utc().unix_timestamp();
     let mut bad = path.to_path_buf();
     let mut name = path
         .file_name()
         .map(|n| n.to_os_string())
-        .unwrap_or_else(|| std::ffi::OsString::from("queue.json"));
+        .unwrap_or_else(|| std::ffi::OsString::from("item.json"));
     name.push(format!(".bad-{ts}"));
     bad.set_file_name(name);
     let _ = tokio::fs::rename(path, &bad).await;

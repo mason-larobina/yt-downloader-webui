@@ -52,7 +52,7 @@ wait_for_port() {
 start_server() {
   local log="$WORK/server.$1.log"
   local args=(
-    --download-dir "$DL" --state-file "$STATE/queue.json"
+    --download-dir "$DL" --state-dir "$STATE"
     --cookies-from-browser none --bind "127.0.0.1:$PORT"
   )
   [[ -n "${2:-}" ]] && args+=(--timeout "$2")
@@ -82,13 +82,16 @@ cat "$WORK/server.1.log"
 
 echo "=== state after shutdown (item should be PENDING, not active) ==="
 python3 -c "
-import json,sys
-d=json.load(open('$STATE/queue.json'))
-print('items:', [(i['id'],i['status']) for i in d['items']], 'next_id:', d['next_id'])
-ok = all(i['status']=='pending' for i in d['items'] if i['status']=='active') or \
-     all(i['status']!='active' for i in d['items'])
-sys.exit(0 if all(i['status']!='active' for i in d['items']) else 1)
-" || { echo "FAIL: an item is still 'active' in the state file"; exit 1; }
+import json,glob,sys
+files=glob.glob('$STATE/*.json')
+items=[json.load(open(f)) for f in files]
+print('items:', [(i['id'],i['status']) for i in items], 'count:', len(items))
+if not items:
+    print('FAIL: no state files'); sys.exit(1)
+if any(i['status']=='active' for i in items):
+    print('FAIL: an item is still active'); sys.exit(1)
+"
+
 
 echo
 echo "=== launch #2 (restart): pending item should be re-started automatically ==="
