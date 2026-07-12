@@ -13,6 +13,12 @@ use tokio::process::Command;
 ///
 /// URLs are passed as a single `Command::arg`, never concatenated into a
 /// shell string -> no command injection.
+///
+/// Format selection prefers mp4 video + m4a audio at up to 1080p, falling
+/// back to best mp4/m4a pair at any height, then best single-file mp4, then
+/// best anything (yt-dlp picks whatever streams the site offers).
+/// `--merge-output-format mp4` ensures merged containers are mp4 even when the
+/// best available video/audio come as separate non-mp4 streams.
 pub fn build(yt_dlp: &str, browser: Option<&str>, download_dir: &Path, url: &str) -> Command {
     let mut cmd = Command::new(yt_dlp);
     if let Some(b) = browser {
@@ -21,12 +27,32 @@ pub fn build(yt_dlp: &str, browser: Option<&str>, download_dir: &Path, url: &str
     cmd.arg("--newline");
     cmd.arg("--progress-template").arg("%(progress)j");
     cmd.arg("-P").arg(download_dir);
+    cmd.arg("-f").arg(format_selector());
+    cmd.arg("--merge-output-format").arg("mp4");
     cmd.arg(url);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
     cmd
+}
+
+/// yt-dlp `-f` format selector: prefer mp4 video + m4a audio at up to
+/// 1080p, then progressively relax constraints so we always fall back to
+/// whatever the site offers rather than failing.
+///
+/// Order of alternatives (first match wins):
+/// 1. best mp4 video ≤1080p + best m4a audio
+/// 2. best mp4 video (any height) + best m4a audio
+/// 3. best single progressive mp4 ≤1080p
+/// 4. best single progressive mp4 (any height)
+/// 5. best anything (last resort)
+fn format_selector() -> &'static str {
+    "bv*[height<=1080][ext=mp4]+ba[ext=m4a]\
+     /bv*[ext=mp4]+ba[ext=m4a]\
+     /b[height<=1080][ext=mp4]\
+     /b[ext=mp4]\
+     /b"
 }
 
 /// Build the `yt-dlp` command that classifies a submitted URL without
