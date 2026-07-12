@@ -38,7 +38,7 @@ start_server() {  # $1 = log file suffix
   local log="$WORK/server.$1.log"
   HOME="$WORK" "$BIN" \
     --download-dir "$DL" --state-file "$STATE/queue.json" \
-    --cookies-from-browser none --addr "127.0.0.1:$PORT" \
+    --cookies-from-browser none --bind "127.0.0.1:$PORT" \
     > "$log" 2>&1 &
   local pid=$!
   PIDS+=("$pid")

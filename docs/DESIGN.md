@@ -106,14 +106,11 @@ web-dl [OPTIONS]
                                ~/.local/share/web-dl/queue.json. Resolved
                                via the home/dir crate; parent dir created.
                                Set to a tmpfs path for non-persistence.
-      --addr <ADDR>            Listen address. Default: 127.0.0.1:8080.
-                               Only the port is used; the host is taken
-                               from --bind.
-      --bind <HOST>            Bind host/interface. Default: 127.0.0.1
-                               (loopback). Use 0.0.0.0 to listen on all
+      --bind <ADDR>             Bind address (host:port). Default:
+                               127.0.0.1:8080 (loopback). Use
+                               0.0.0.0:<port> to listen on all
                                interfaces -- DANGEROUS; prints a warning.
-                               Overrides the host portion of --addr. See
-                               Sec. 9.
+                               See Sec. 9.
   -v, --verbose                Verbose server logs. Bumps the `EnvFilter` to
                                `web_dl=debug,info`; `RUST_LOG` is honored if
                                set explicitly.
@@ -592,8 +589,8 @@ item and shutting the server down share one code path.
 
 ## 9. Security
 
-- **Bind loopback only by default.** `--bind` defaults to `127.0.0.1`; any
-  non-loopback value (e.g. `--bind 0.0.0.0`) prints a loud warning. Anyone who
+- **Bind loopback only by default.** `--bind` defaults to `127.0.0.1:8080`; any
+  non-loopback value (e.g. `--bind 0.0.0.0:8080`) prints a loud warning. Anyone who
   can reach the server can run `yt-dlp` against arbitrary URLs (limited to
   what `--cookies-from-browser firefox` allows), read live download status,
   **download any file in your download dir to their device, and delete files**
@@ -601,7 +598,7 @@ item and shutting the server down share one code path.
   Firefox session for these sites *and* as a file server for that directory.
   Do not expose to a network. **Mobile use** requires reaching the loopback
   server: prefer a tunnel (Tailscale / SSH port-forward) so the surface stays
-  authenticated/encrypted; `--bind 0.0.0.0` is the escape hatch and prints its
+  authenticated/encrypted; `--bind 0.0.0.0:<port>` is the escape hatch and prints its
   warning at startup.
 - **No shell.** URLs are `Command::arg`s, never concatenated into a shell
   string -> no command injection.

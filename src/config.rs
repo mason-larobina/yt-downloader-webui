@@ -25,19 +25,19 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub state_file: Option<String>,
 
-    /// Listen address. Default: 127.0.0.1:8080.
+    /// Bind address (host:port). Default: 127.0.0.1:8080 (loopback). Use
+    /// 0.0.0.0:<port> to listen on all interfaces -- DANGEROUS; prints a warning.
     #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8080")]
-    pub addr: String,
-
-    /// Bind host/interface. Default: 127.0.0.1 (loopback). Use 0.0.0.0 to listen
-    /// on all interfaces -- DANGEROUS; prints a warning. Overrides the host
-    /// portion of --addr.
-    #[arg(long, value_name = "HOST", default_value = "127.0.0.1")]
     pub bind: String,
 
     /// Verbose server logs (web_dl=debug).
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Shut the server down after N seconds. Intended for testing so the
+    /// binary self-terminates without an external kill; unset by default.
+    #[arg(long, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
 }
 
 /// Resolved runtime configuration.
@@ -48,7 +48,7 @@ pub struct Config {
     pub yt_dlp: String,
     pub state_file: PathBuf,
     pub addr: SocketAddr,
-    pub bind: String,
+    pub timeout: Option<u64>,
 }
 
 impl Cli {
@@ -83,24 +83,15 @@ impl Cli {
                 .with_context(|| format!("failed to create state dir: {}", parent.display()))?;
         }
 
-        // The listen host comes from --bind (default loopback); the port comes
-        // from --addr. So --bind overrides only the host portion of --addr.
-        let port = self
-            .addr
-            .rsplit(':')
-            .next()
-            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-            .unwrap_or("8080");
-        let addr_str = format!("{}:{port}", self.bind);
-        let addr: SocketAddr = addr_str
+        let addr: SocketAddr = self
+            .bind
             .parse()
-            .with_context(|| format!("invalid listen address: {addr_str}"))?;
+            .with_context(|| format!("invalid bind address: {}", self.bind))?;
 
         // Loud warning when binding anything other than loopback. Printed to
         // stderr so it's visible even if the tracing subscriber failed to init;
         // also emitted via tracing so it lands in journald with a WARN priority.
-        let loopback = matches!(self.bind.as_str(), "127.0.0.1" | "::1" | "localhost");
-        if !loopback {
+        if !addr.ip().is_loopback() {
             eprintln!(
                 "WARNING: --bind {bind} listens on a non-loopback interface. Anyone who can \
                  reach this machine can run yt-dlp with your browser cookies, download any \
@@ -120,7 +111,7 @@ impl Cli {
             yt_dlp: self.yt_dlp,
             state_file,
             addr,
-            bind: self.bind,
+            timeout: self.timeout,
         })
     }
 }

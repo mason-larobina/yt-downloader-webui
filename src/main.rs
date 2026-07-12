@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
 
     // Graceful shutdown: SIGINT / SIGTERM trip the global shutdown token.
     let shutdown_token = state.shutdown.clone();
+    let timeout = cfg.timeout;
     let shutdown_signal = async move {
         let ctrl_c = async {
             let _ = signal::ctrl_c().await;
@@ -82,9 +83,20 @@ async fn main() -> Result<()> {
         #[cfg(not(unix))]
         let term = std::future::pending::<()>();
 
+        // Optional self-termination after N seconds (testing aid).
+        let timer = async {
+            match timeout {
+                Some(secs) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+
         tokio::select! {
             _ = ctrl_c => {}
             _ = term => {}
+            _ = timer => tracing::info!(?timeout, "--timeout expired, shutting down"),
         }
         tracing::info!("shutdown signal received");
         shutdown_token.cancel();

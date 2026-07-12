@@ -35,7 +35,7 @@ fi
 
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-file "$STATE/queue.json" \
-  --cookies-from-browser none --addr "127.0.0.1:$PORT" \
+  --cookies-from-browser none --bind "127.0.0.1:$PORT" \
   > "$WORK/server.log" 2>&1 &
 SRV=$!
 PIDS+=("$SRV")
