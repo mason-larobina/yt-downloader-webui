@@ -81,10 +81,32 @@ impl Queue {
         id
     }
 
-    /// Append a pending item for the given URL; returns the new item's id.
+    /// Append a pending **probe** item for a submitted URL of unknown type.
+    /// The worker runs `--flat-playlist -j` on it first; a playlist is
+    /// expanded into per-video items, a single video is downloaded directly.
+    /// Returns the new item's id.
     pub fn enqueue(&mut self, url: String) -> u64 {
         let id = self.alloc_id();
         let item = QueueItem::new(id, url);
+        self.items.push(item);
+        id
+    }
+
+    /// Append a pending **video** item produced by playlist expansion. These
+    /// are known single-video URLs (`entry.url` from `--flat-playlist -j` is
+    /// already the full watch URL), so the worker downloads them directly
+    /// without re-probing. Returns the new item's id.
+    pub fn enqueue_video(
+        &mut self,
+        url: String,
+        title: Option<String>,
+        duration: Option<f64>,
+    ) -> u64 {
+        let id = self.alloc_id();
+        let mut item = QueueItem::new(id, url);
+        item.kind = ItemKind::Video;
+        item.title = title;
+        item.duration = duration;
         self.items.push(item);
         id
     }
@@ -111,7 +133,6 @@ impl Queue {
         }
         false
     }
-
     /// Drop all terminal (Done/Failed/Cancelled) items. Pending + active retained.
     /// Returns the number removed.
     pub fn clear_terminal(&mut self) -> usize {
@@ -151,6 +172,15 @@ pub struct QueueItem {
     pub id: u64,
     pub url: String,
     pub status: ItemStatus,
+    /// How the worker treats this item: `Probe` (submitted, classify first)
+    /// or `Video` (known single video, download directly). See `ItemKind`.
+    pub kind: ItemKind,
+    /// Video title resolved from the `--flat-playlist -j` probe, used as the
+    /// row label before yt-dlp emits a `Destination:`/filename. `None` for
+    /// submitted URLs until they are probed.
+    pub title: Option<String>,
+    /// Duration in seconds from the probe, for display. `None` if unknown.
+    pub duration: Option<f64>,
     pub filename: Option<String>,
     pub progress: Option<Progress>,
     pub error: Option<String>,
@@ -165,6 +195,9 @@ impl QueueItem {
             id,
             url,
             status: ItemStatus::Pending,
+            kind: ItemKind::Probe,
+            title: None,
+            duration: None,
             filename: None,
             progress: None,
             error: None,
@@ -173,9 +206,14 @@ impl QueueItem {
         }
     }
 
-    /// A short, human-readable label for the row: filename if known, else the URL.
+    /// A short, human-readable label for the row. Preference: the on-disk
+    /// filename (most accurate once yt-dlp picks one) > the probe-resolved
+    /// title (good for pending per-video items) > the raw URL.
     pub fn label(&self) -> &str {
-        self.filename.as_deref().unwrap_or(&self.url)
+        self.filename
+            .as_deref()
+            .or(self.title.as_deref())
+            .unwrap_or(&self.url)
     }
 }
 
@@ -186,6 +224,46 @@ pub enum ItemStatus {
     Done,
     Failed,
     Cancelled,
+}
+
+/// How the worker should treat a queued item.
+///
+/// - `Probe`: a *submitted* URL of unknown type. The worker first runs
+///   `yt-dlp --flat-playlist -j` to classify it: a playlist (`_type:"url"`
+///   entries) is expanded into per-video `Video` items; a single video
+///   (`_type:"video"` / no entries) is then downloaded directly. This costs a
+///   second extraction for single videos but needs no URL-shape guessing.
+/// - `Video`: a known single-video URL (produced by expansion). The worker
+///   downloads it directly -- no probe -- since its type is already known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemKind {
+    Probe,
+    Video,
+}
+
+impl ItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ItemKind::Probe => "probe",
+            ItemKind::Video => "video",
+        }
+    }
+
+    /// Default for persisted items written before `kind` existed: treat as a
+    /// fresh submitted URL (re-probe on restart). Safe because probing a
+    /// single video just downloads it, and probing a playlist re-expands.
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "video" => ItemKind::Video,
+            _ => ItemKind::Probe,
+        }
+    }
+}
+
+impl Default for ItemKind {
+    fn default() -> Self {
+        ItemKind::Probe
+    }
 }
 
 impl ItemStatus {

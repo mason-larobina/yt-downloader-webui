@@ -31,6 +31,15 @@ struct SerializedItem {
     id: u64,
     url: String,
     status: String,
+    /// `ItemKind` as a string ("probe" / "video"). Absent on files written
+    /// before playlist expansion existed; defaults to `Probe` on load
+    /// (re-probe on restart -- safe for both single videos and playlists).
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    duration: Option<f64>,
     filename: Option<String>,
     error: Option<String>,
     enqueued_at: String,
@@ -135,6 +144,9 @@ async fn load_one(path: &Path) -> Result<QueueItem> {
         id: s.id,
         url: s.url,
         status,
+        kind: crate::state::ItemKind::from_str_lossy(&s.kind),
+        title: s.title,
+        duration: s.duration,
         filename: s.filename,
         progress: None,
         error: s.error,
@@ -223,6 +235,9 @@ async fn write_item(path: &Path, item: &QueueItem) -> Result<()> {
         id: item.id,
         url: item.url.clone(),
         status: item.status.as_str().to_string(),
+        kind: item.kind.as_str().to_string(),
+        title: item.title.clone(),
+        duration: item.duration,
         filename: item.filename.clone(),
         error: item.error.clone(),
         enqueued_at: item

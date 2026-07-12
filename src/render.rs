@@ -65,13 +65,31 @@ fn human_eta(eta: Option<f64>) -> String {
     }
 }
 
+/// Format a video duration (seconds) as M:SS or H:MM:SS. `None` -> empty.
+fn human_duration(secs: Option<f64>) -> String {
+    match secs {
+        Some(e) if e > 0.0 => {
+            let s = e as u64;
+            let h = s / 3600;
+            let m = (s % 3600) / 60;
+            let sec = s % 60;
+            if h > 0 {
+                format!("{}:{:02}:{:02}", h, m, sec)
+            } else {
+                format!("{}:{:02}", m, sec)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
 // ----------------------------- #status ------------------------------------
 
 /// Render the `#status` fragment: the active item's progress bar, or an idle
 /// "queue empty / waiting" line.
 pub fn render_status(active: Option<&QueueItem>) -> String {
     match active {
-        None => r#"<div id="status" class="status idle">queue empty &mdash; waiting for URLs</div>"#
+        None => r#"<div id="status" class="status idle" sse-swap="status" hx-swap="outerHTML">queue empty &mdash; waiting for URLs</div>"#
             .to_string(),
         Some(item) => {
             let label = esc(item.label());
@@ -104,7 +122,7 @@ pub fn render_status(active: Option<&QueueItem>) -> String {
             }
 
             format!(
-                r#"<div id="status" class="status active"><div class="bar"><i style="width:{w:.0}%"></i></div><span class="pct">{pct:.0}%</span> <span class="label">{label}</span>{meta}</div>"#,
+                r#"<div id="status" class="status active" sse-swap="status" hx-swap="outerHTML"><div class="bar"><i style="width:{w:.0}%"></i></div><span class="pct">{pct:.0}%</span> <span class="label">{label}</span>{meta}</div>"#,
                 w = width,
                 pct = percent,
                 label = label,
@@ -174,6 +192,14 @@ fn render_queue_row(item: &QueueItem) -> String {
     let glyph = status_glyph(item.status);
     let label = esc(item.label());
     let status = item.status.as_str();
+    // Show the probe-resolved duration next to the label when known (mostly
+    // per-video items from playlist expansion).
+    let dur = human_duration(item.duration);
+    let label_html = if dur.is_empty() {
+        format!(r#"<span class="label">{label}</span>"#)
+    } else {
+        format!(r#"<span class="label">{label}</span> <span class="dur">{dur}</span>"#)
+    };
 
     let action = match item.status {
         ItemStatus::Pending => format!(
@@ -203,9 +229,9 @@ fn render_queue_row(item: &QueueItem) -> String {
     };
 
     format!(
-        r##"<div class="row {status}"><span class="glyph">{g}</span> <span class="label">{label}</span> <span class="st">({status})</span> {action}{error}</div>"##,
+        r##"<div class="row {status}"><span class="glyph">{g}</span> {label_html} <span class="st">({status})</span> {action}{error}</div>"##,
         g = glyph,
-        label = label,
+        label_html = label_html,
         status = status,
         action = action,
         error = error,

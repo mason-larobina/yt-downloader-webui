@@ -13,6 +13,7 @@ up an isolated server in a temp dir, and cleans up after itself.
 | Script                       | What it checks                                                                 |
 |------------------------------|--------------------------------------------------------------------------------|
 | `probe-ytdlp-flags.sh`       | yt-dlp `--newline --progress-template '%(progress)j'` output shape (the DESIGN Sec. 11 open question). Confirms one `\n`-terminated JSON object per tick, stdout/stderr split, `ERROR:` on failure. |
+| `probe-flat-playlist.sh`    | yt-dlp `--flat-playlist -j` info-extraction shape (no download), validated against a real YouTube playlist with Firefox cookies. Confirms each entry's `url` is already the full watch URL, the streaming `-j` line carries `playlist_index`/`playlist_count`/`playlist_title`, and a single video under `--flat-playlist` is a full 623 KB extraction (so single videos are not free to probe). Saved artifacts under `tests/web-dl-probe-flat.*` feed the parser unit tests in `src/parse.rs`. |
 | `e2e-download.sh`            | Full happy path: POST a URL, watch SSE progress/queue/log/library, file lands in the download dir, item reaches `done`, final status is idle. |
 | `persistence-restart.sh`     | SIGTERM mid-download -> item saved as `pending` -> on restart the worker re-starts it to `done`. Verifies shutdown ordering (worker exits before the final flush). |
 | `endpoints.sh`               | Queue controls (`/download`, `/cancel`, `/retry`, `/clear`), file serving (inline/download/range), `/delete`, path-traversal guards, `ERROR:` capture into `item.error`. |
@@ -25,6 +26,7 @@ up an isolated server in a temp dir, and cleans up after itself.
 ./tests/persistence-restart.sh
 ./tests/endpoints.sh
 ./tests/probe-ytdlp-flags.sh
+./tests/probe-flat-playlist.sh   # run on a machine with a logged-in Firefox
 
 # override the URL (e.g. a different/smaller source):
 ./tests/e2e-download.sh 'https://example.com/video.mp4'
@@ -41,5 +43,11 @@ WEB_DL_BINARY=./target/release/web-dl PORT=18090 TIMEOUT=120 ./tests/e2e-downloa
 - `endpoints.sh` uses an unavailable YouTube URL to exercise the failure path;
   it needs no real download.
 - `probe-ytdlp-flags.sh` requires `yt-dlp` on `PATH`.
+- `probe-flat-playlist.sh` requires `yt-dlp` on `PATH` **and a logged-in
+  Firefox profile** (`--cookies-from-browser firefox`); YouTube 403s
+  anonymous, cookie-less requests, so it must be run on the operator's own
+  machine, not in a sandbox without cookies. It writes artifacts to a temp
+  dir and prints the path; paste the output (or the saved JSON) back to pin
+  the parser to the real shape.
 - Unit tests (parser, no network) live in `src/parse.rs` and run via
   `cargo test`.

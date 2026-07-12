@@ -78,6 +78,7 @@ button.clear, button.refresh { background: #3a3a2b; border-color: #505034; }
 .queue .row.failed .glyph, .queue .row.cancelled .glyph { color: var(--err); }
 .queue .label { font-family: monospace; font-size: 13px; word-break: break-all; flex: 1 1 auto; }
 .queue .st { color: var(--muted); font-size: 12px; }
+.queue .dur { color: var(--muted); font-size: 12px; font-family: monospace; }
 .queue .err { color: var(--err); font-size: 12px; }
 .queue .clear { margin-top: 8px; }
 
