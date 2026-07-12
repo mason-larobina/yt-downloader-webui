@@ -218,8 +218,39 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         }
     };
 
-    // Determine Done / Failed. Pull any captured error from the active item.
+    // Determine Done / Failed. For a successful download with no thumbnail
+    // yet, generate one from the downloaded file with ffmpeg (best-effort,
+    // captured here so the final queue event includes the thumb). Runs without
+    // the queue lock held.
     let success = status.success();
+    let mut gen_thumb: Option<String> = None;
+    if success {
+        let (have_thumb, video_path) = {
+            let q = state.queue.lock().await;
+            let item = match q.get(item_id) {
+                Some(i) => i,
+                None => return,
+            };
+            (
+                item.thumbnail.clone(),
+                item.filename
+                    .clone()
+                    .map(|base| state.cfg.download_dir.join(base)),
+            )
+        };
+        if have_thumb.is_none() {
+            if let Some(vp) = video_path {
+                match crate::thumb::generate(&state.cfg.ffmpeg, &state.cfg.cache_dir, &vp).await {
+                    Ok(fname) => gen_thumb = Some(fname),
+                    Err(e) => {
+                        tracing::debug!(
+                            "ffmpeg thumbnail generation failed for item {item_id}: {e:#}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     {
         let mut q = state.queue.lock().await;
         if let Some(item) = q.get_mut(item_id) {
@@ -227,6 +258,11 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             if success {
                 item.status = ItemStatus::Done;
                 item.progress = None;
+                if let Some(fname) = &gen_thumb {
+                    if item.thumbnail.is_none() {
+                        item.thumbnail = Some(fname.clone());
+                    }
+                }
                 tracing::info!("item {item_id} done");
             } else {
                 item.status = ItemStatus::Failed;

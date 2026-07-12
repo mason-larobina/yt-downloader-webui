@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/clear", axum::routing::post(post_clear))
         .route("/library", axum::routing::get(library::get_library))
         .route("/file/{name}", axum::routing::get(library::get_file))
+        .route("/thumb/{name}", axum::routing::get(get_thumb))
         .route("/delete/{name}", axum::routing::post(library::delete_file))
         .route("/events", axum::routing::get(get_events))
         .with_state(state)
@@ -92,6 +93,9 @@ struct ApproveEntry {
     url: String,
     title: Option<String>,
     duration: Option<f64>,
+    /// Best-thumbnail URL harvested by the probe; POST /approve fetches it
+    /// into the cache and attaches the resulting filename to the item.
+    thumbnail: Option<String>,
 }
 
 /// POST /download -- probe each pasted URL synchronously (fast: `--flat-playlist
@@ -125,6 +129,9 @@ async fn post_download(
     let mut entries: Vec<FlatEntry> = Vec::new();
     let mut playlist_title: Option<String> = None;
     let mut errors: Vec<(String, String)> = Vec::new();
+    // (item id, thumbnail URL) for directly-enqueued single videos; fetched
+    // in the background after the response is returned.
+    let mut direct_thumbs: Vec<(u64, String)> = Vec::new();
 
     for u in &urls {
         let outcome = worker::probe(&state, u).await;
@@ -139,11 +146,15 @@ async fn post_download(
         } else if let Some(sv) = outcome.single {
             let title = sv.title.clone();
             let duration = sv.duration;
-            {
+            let thumb = sv.thumbnail.clone();
+            let id = {
                 let mut q = state.queue.lock().await;
-                q.enqueue(u.clone(), title, duration);
-            }
+                q.enqueue(u.clone(), title, duration)
+            };
             direct += 1;
+            if let Some(t) = thumb {
+                direct_thumbs.push((id, t));
+            }
         } else {
             errors.push((
                 u.clone(),
@@ -162,6 +173,13 @@ async fn post_download(
         state.emit(Event::Queue(render::render_queue(&q)));
         drop(q);
         state.persist().await;
+    }
+
+    // Fetch single-video thumbnails in the background (best-effort); each
+    // success emits a `queue` swap so the image appears as it lands. The
+    // response is already returned to the caller below.
+    if !direct_thumbs.is_empty() {
+        spawn_thumbnail_fetches(state.clone(), direct_thumbs);
     }
 
     if !entries.is_empty() {
@@ -220,13 +238,18 @@ async fn post_approve(
     }
 
     let mut n: u64 = 0;
+    // (item id, thumbnail URL) pairs to fetch in the background.
+    let mut thumbs: Vec<(u64, String)> = Vec::new();
     {
         let mut q = state.queue.lock().await;
         for raw in &entries {
             match serde_json::from_str::<ApproveEntry>(raw) {
                 Ok(e) => {
-                    q.enqueue(e.url, e.title, e.duration);
+                    let id = q.enqueue(e.url, e.title, e.duration);
                     n += 1;
+                    if let Some(t) = e.thumbnail {
+                        thumbs.push((id, t));
+                    }
                 }
                 Err(_) => {
                     // Skip a malformed value rather than failing the whole
@@ -242,6 +265,10 @@ async fn post_approve(
     }
     state.persist().await;
 
+    if !thumbs.is_empty() {
+        spawn_thumbnail_fetches(state.clone(), thumbs);
+    }
+
     format!(
         r#"<span class="ack">queued {n} download{}</span>"#,
         if n == 1 { "" } else { "s" }
@@ -249,6 +276,54 @@ async fn post_approve(
 }
 
 // ------------------------------ /cancel/:id --------------------------------
+
+/// Spawn a background task that fetches a batch of thumbnails concurrently
+/// (no lock held during network I/O), then sets each landed filename on its
+/// item under one lock and emits a single `queue` swap + persist. Best-effort:
+/// fetch failures are logged at debug and otherwise ignored (the worker's
+/// ffmpeg fallback may still generate a thumb after the download).
+///
+/// Used by POST /download (single videos) and POST /approve (playlist
+/// entries) so neither handler blocks on thumbnail fetches.
+fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
+    tokio::spawn(async move {
+        let mut set = tokio::task::JoinSet::new();
+        for (id, url) in items {
+            let http = state.http.clone();
+            let dir = state.cfg.cache_dir.clone();
+            set.spawn(async move {
+                let r = crate::thumb::fetch(&http, &dir, &url).await;
+                (id, r)
+            });
+        }
+        let mut landed: Vec<(u64, String)> = Vec::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((id, Ok(fname))) => landed.push((id, fname)),
+                Ok((id, Err(e))) => {
+                    tracing::debug!("thumbnail fetch failed for item {id}: {e:#}");
+                }
+                Err(e) => tracing::debug!("thumbnail fetch task panicked: {e}"),
+            }
+        }
+        if landed.is_empty() {
+            return;
+        }
+        let mut q = state.queue.lock().await;
+        for (id, fname) in &landed {
+            if let Some(item) = q.get_mut(*id) {
+                // Don't clobber a thumb that already resolved (e.g. an
+                // earlier fetch, or ffmpeg ran first).
+                if item.thumbnail.is_none() {
+                    item.thumbnail = Some(fname.clone());
+                }
+            }
+        }
+        state.emit(Event::Queue(render::render_queue(&q)));
+        drop(q);
+        state.persist().await;
+    });
+}
 
 /// POST /cancel/:id -- cancel the active or pending queue item.
 async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
@@ -355,6 +430,42 @@ async fn post_clear(State(state): State<Arc<AppState>>) -> String {
     }
     state.persist().await;
     format!(r#"<span id="ack">cleared {n} item{}</span>"#, if n == 1 { "" } else { "s" })
+}
+
+// ------------------------------ /thumb/:name ------------------------------
+
+/// GET /thumb/:name -- stream a cached thumbnail inline (served from
+/// `cfg.cache_dir`). `:name` must be a bare filename; the path is resolved and
+/// asserted to stay inside the cache dir, otherwise 404 (never an error that
+/// leaks whether a path outside the dir exists). Thumbnails are small, so no
+/// range support -- just stream the bytes.
+async fn get_thumb(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Response {
+    let path = match crate::thumb::resolve(&state.cfg.cache_dir, &name) {
+        Some(p) => p,
+        None => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let content_type = mime_guess::from_path(&path)
+        .first()
+        .map(|m| m.essence_str().to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&content_type).unwrap(),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)).unwrap(),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
+    (StatusCode::OK, headers, Body::from(bytes)).into_response()
 }
 
 // ------------------------------ /events (SSE) ------------------------------

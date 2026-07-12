@@ -14,6 +14,9 @@ struct ApprovalEntry<'a> {
     url: &'a str,
     title: Option<&'a str>,
     duration: Option<f64>,
+    /// Best-thumbnail URL harvested by the probe; POST /approve fetches it into
+    /// the cache and attaches the resulting filename to the enqueued item.
+    thumbnail: Option<&'a str>,
 }
 
 /// HTML-escape untrusted text (log lines, URLs, filenames).
@@ -126,6 +129,14 @@ pub fn render_status(active: Option<&QueueItem>) -> String {
                 })
             });
 
+            let thumb_html = match &item.thumbnail {
+                Some(name) => format!(
+                    r##"<img class="thumb" src="/thumb/{name}" alt="" loading="lazy">"##,
+                    name = esc(name)
+                ),
+                None => String::new(),
+            };
+
             let mut bits: Vec<String> = Vec::new();
             if !speed.is_empty() { bits.push(speed.clone()); }
             if !eta.is_empty() { bits.push(eta.clone()); }
@@ -134,7 +145,8 @@ pub fn render_status(active: Option<&QueueItem>) -> String {
             }
 
             format!(
-                r#"<div id="status" class="status active" sse-swap="status" hx-swap="outerHTML"><div class="bar"><i style="width:{w:.0}%"></i></div><span class="pct">{pct:.0}%</span> <span class="label">{label}</span>{meta}</div>"#,
+                r#"<div id="status" class="status active" sse-swap="status" hx-swap="outerHTML">{thumb}<div class="bar"><i style="width:{w:.0}%"></i></div><span class="pct">{pct:.0}%</span> <span class="label">{label}</span>{meta}</div>"#,
+                thumb = thumb_html,
                 w = width,
                 pct = percent,
                 label = label,
@@ -213,6 +225,14 @@ fn render_queue_row(item: &QueueItem) -> String {
         format!(r#"<span class="label">{label}</span> <span class="dur">{dur}</span>"#)
     };
 
+    let thumb_html = match &item.thumbnail {
+        Some(name) => format!(
+            r##"<img class="thumb" src="/thumb/{name}" alt="" loading="lazy">"##,
+            name = esc(name)
+        ),
+        None => String::new(),
+    };
+
     let action = match item.status {
         ItemStatus::Pending => format!(
             r##"<button class="cancel" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML">cancel</button>"##,
@@ -241,8 +261,9 @@ fn render_queue_row(item: &QueueItem) -> String {
     };
 
     format!(
-        r##"<div class="row {status}"><span class="glyph">{g}</span> {label_html} <span class="st">({status})</span> {action}{error}</div>"##,
+        r##"<div class="row {status}"><span class="glyph">{g}</span>{thumb} {label_html} <span class="st">({status})</span> {action}{error}</div>"##,
         g = glyph,
+        thumb = thumb_html,
         label_html = label_html,
         status = status,
         action = action,
@@ -314,6 +335,7 @@ pub fn render_approval(title: Option<&str>, entries: &[FlatEntry], note: Option<
             url,
             title: e.title.as_deref(),
             duration: e.duration,
+            thumbnail: e.thumbnail.as_deref(),
         })
         .unwrap_or_default();
         let value = esc(&blob);
@@ -387,6 +409,7 @@ mod approval_tests {
         url: String,
         title: Option<String>,
         duration: Option<f64>,
+        thumbnail: Option<String>,
     }
 
     #[test]
@@ -397,6 +420,7 @@ mod approval_tests {
                 url: Some("https://www.youtube.com/watch?v=aaa".into()),
                 title: Some("First & <second> \"quoted\"".into()),
                 duration: Some(3623.0),
+                thumbnail: Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg".into()),
                 ..Default::default()
             },
             FlatEntry {
@@ -404,6 +428,7 @@ mod approval_tests {
                 url: Some("https://www.youtube.com/watch?v=bbb".into()),
                 title: None,
                 duration: None,
+                thumbnail: None,
                 ..Default::default()
             },
         ];
@@ -446,11 +471,16 @@ mod approval_tests {
         assert_eq!(first.url, "https://www.youtube.com/watch?v=aaa");
         assert_eq!(first.title.as_deref(), Some(r#"First & <second> "quoted""#));
         assert_eq!(first.duration, Some(3623.0));
+        assert_eq!(
+            first.thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg")
+        );
 
         let second: ApproveEntry =
             serde_json::from_str(&unescape(&values[1])).expect("second value decodes");
         assert_eq!(second.url, "https://www.youtube.com/watch?v=bbb");
         assert!(second.title.is_none());
         assert!(second.duration.is_none());
+        assert!(second.thumbnail.is_none());
     }
 }

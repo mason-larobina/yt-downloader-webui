@@ -76,6 +76,10 @@ button.clear, button.refresh { background: #3a3a2b; border-color: #505034; }
   vertical-align: middle; overflow: hidden; margin-right: 10px;
 }
 .status .bar i { display: block; height: 100%; background: var(--bar-fg); }
+.status .thumb {
+  width: 64px; height: 48px; object-fit: cover; border-radius: 4px;
+  vertical-align: middle; margin-right: 10px; background: var(--bar-bg);
+}
 .status .pct { font-weight: 600; }
 .status .label { color: var(--muted); font-family: monospace; font-size: 12px; word-break: break-all; }
 .status .meta { color: var(--muted); font-size: 12px; }
@@ -93,6 +97,10 @@ button.clear, button.refresh { background: #3a3a2b; border-color: #505034; }
 .queue .row.active .glyph { color: var(--accent); }
 .queue .row.done .glyph { color: var(--ok); }
 .queue .row.failed .glyph, .queue .row.cancelled .glyph { color: var(--err); }
+.queue .thumb {
+  width: 48px; height: 36px; object-fit: cover; border-radius: 3px;
+  flex: 0 0 auto; background: var(--bar-bg);
+}
 .queue .label { font-family: monospace; font-size: 13px; word-break: break-all; flex: 1 1 auto; }
 .queue .st { color: var(--muted); font-size: 12px; }
 .queue .dur { color: var(--muted); font-size: 12px; font-family: monospace; }

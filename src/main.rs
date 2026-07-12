@@ -8,6 +8,7 @@ mod persist;
 mod render;
 mod server;
 mod state;
+mod thumb;
 mod worker;
 mod ytdlp;
 
@@ -32,6 +33,11 @@ async fn main() -> Result<()> {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+    // ffmpeg is only used for thumbnail generation (best-effort), so a missing
+    // binary is a warning, not fatal.
+    if let Err(e) = config::ffmpeg_check(&cfg.ffmpeg) {
+        tracing::warn!("{e}");
+    }
 
     tracing::info!(
         download_dir = %cfg.download_dir.display(),
@@ -42,7 +48,7 @@ async fn main() -> Result<()> {
     );
 
     // Load persisted queue (restart requeue: active -> pending).
-    let queue = persist::load(&cfg.state_dir).await?;
+    let queue = persist::load(&cfg.state_dir, &cfg.cache_dir).await?;
     let pending = queue
         .items
         .iter()

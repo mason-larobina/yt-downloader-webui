@@ -21,6 +21,8 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub log_ring: Mutex<RingBuffer<String>>,
     pub notify: Notify,
+    /// Reused async HTTP client for thumbnail fetches (HTTPS via rustls).
+    pub http: reqwest::Client,
     /// Global shutdown token. Also wired into each active item's cancel select!.
     pub shutdown: CancellationToken,
 }
@@ -28,12 +30,17 @@ pub struct AppState {
 impl AppState {
     pub fn new(cfg: Config, queue: Queue) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAP);
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("web-dl/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .expect("reqwest client build");
         Arc::new(AppState {
             cfg,
             queue: Mutex::new(queue),
             events,
             log_ring: Mutex::new(RingBuffer::new(LOG_RING_CAP)),
             notify: Notify::new(),
+            http,
             shutdown: CancellationToken::new(),
         })
     }
@@ -178,6 +185,11 @@ pub struct QueueItem {
     pub filename: Option<String>,
     pub progress: Option<Progress>,
     pub error: Option<String>,
+    /// Cache filename (bare basename, e.g. `<sha1>.jpg`) of the item's
+    /// thumbnail in `cfg.cache_dir`, Set during the probe (fetched from the
+    /// thumbnail URL) or, if absent then, by ffmpeg after a successful
+    /// download. `None` until resolved.
+    pub thumbnail: Option<String>,
     /// Set when Active; POST /cancel and shutdown trip it.
     pub cancel: Option<CancellationToken>,
     pub enqueued_at: time::OffsetDateTime,
@@ -194,6 +206,7 @@ impl QueueItem {
             filename: None,
             progress: None,
             error: None,
+            thumbnail: None,
             cancel: None,
             enqueued_at: time::OffsetDateTime::now_utc(),
         }

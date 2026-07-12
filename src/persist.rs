@@ -36,6 +36,8 @@ struct SerializedItem {
     #[serde(default)]
     duration: Option<f64>,
     filename: Option<String>,
+    #[serde(default)]
+    thumbnail: Option<String>,
     error: Option<String>,
     enqueued_at: String,
 }
@@ -44,7 +46,7 @@ struct SerializedItem {
 /// apply restart semantics (`active` -> `pending`). Items are ordered FIFO by
 /// `enqueued_at` (then `id`). A per-file parse error moves that single file
 /// aside to `<name>.bad-<ts>`; the rest of the queue still loads.
-pub async fn load(dir: &Path) -> Result<Queue> {
+pub async fn load(dir: &Path, cache_dir: &Path) -> Result<Queue> {
     tokio::fs::create_dir_all(dir)
         .await
         .with_context(|| format!("creating state dir {}", dir.display()))?;
@@ -68,7 +70,7 @@ pub async fn load(dir: &Path) -> Result<Queue> {
         if !is_state_file(name) {
             continue;
         }
-        match load_one(&path).await {
+        match load_one(&path, cache_dir).await {
             Ok(item) => items.push(item),
             Err(e) => {
                 let bad = move_aside(&path).await?;
@@ -107,7 +109,10 @@ pub async fn load(dir: &Path) -> Result<Queue> {
 }
 
 /// Parse one `<ts>.json` into a `QueueItem` (applying `active` -> `pending`).
-async fn load_one(path: &Path) -> Result<QueueItem> {
+/// A persisted `thumbnail` whose cache file no longer exists (cache cleared) is
+/// dropped to `None` so the UI never renders a broken image -- the cache is
+/// re-generatable on the next probe / download.
+async fn load_one(path: &Path, cache_dir: &Path) -> Result<QueueItem> {
     let bytes = tokio::fs::read(path)
         .await
         .with_context(|| format!("reading {}", path.display()))?;
@@ -135,6 +140,11 @@ async fn load_one(path: &Path) -> Result<QueueItem> {
         OffsetDateTime::parse(&s.enqueued_at, &Rfc3339Fmt)
             .unwrap_or_else(|_| OffsetDateTime::now_utc());
 
+    // Self-heal: if the persisted thumbnail file is gone from the cache dir,
+    // treat it as absent (the cache is safe to clear; the thumb is re-fetched
+    // / re-generated on the next probe / download).
+    let thumbnail = s.thumbnail.filter(|name| cache_dir.join(name).is_file());
+
     Ok(QueueItem {
         id: s.id,
         url: s.url,
@@ -142,6 +152,7 @@ async fn load_one(path: &Path) -> Result<QueueItem> {
         title: s.title,
         duration: s.duration,
         filename: s.filename,
+        thumbnail,
         progress: None,
         error: s.error,
         cancel: None,
@@ -232,6 +243,7 @@ async fn write_item(path: &Path, item: &QueueItem) -> Result<()> {
         title: item.title.clone(),
         duration: item.duration,
         filename: item.filename.clone(),
+        thumbnail: item.thumbnail.clone(),
         error: item.error.clone(),
         enqueued_at: item
             .enqueued_at

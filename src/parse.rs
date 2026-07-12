@@ -46,6 +46,10 @@ pub struct FlatEntry {
     pub playlist_index: Option<u64>,
     pub playlist_count: Option<u64>,
     pub playlist_title: Option<String>,
+    /// Best-resolution thumbnail URL harvested from the entry's `thumbnails`
+    /// array (max width*height), or the top-level `thumbnail` string for a
+    /// single-video dict. `None` if the probe JSON carried none.
+    pub thumbnail: Option<String>,
 }
 
 impl FlatEntry {
@@ -157,7 +161,34 @@ fn parse_flat_entry(obj: &serde_json::Map<String, Value>) -> FlatEntry {
         playlist_index: get_uint("playlist_index"),
         playlist_count: get_uint("playlist_count"),
         playlist_title: get_str("playlist_title"),
+        thumbnail: best_thumbnail(obj),
     }
+}
+
+/// Pick the highest-resolution thumbnail URL from a `thumbnails` array, falling
+/// back to the top-level `thumbnail` string. yt-dlp's flat-playlist entries carry
+/// a small `thumbnails` list; single-video dicts carry a rich one plus a
+/// top-level `thumbnail` URL. We maximise `width * height` (treating missing
+/// dims as 0) and ignore entries without a `url`.
+fn best_thumbnail(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    if let Some(Value::Array(arr)) = obj.get("thumbnails") {
+        let mut best: Option<(f64, String)> = None;
+        for t in arr {
+            let Some(url) = t.get("url").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let w = t.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let h = t.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let area = w * h;
+            if best.as_ref().map_or(true, |(a, _)| area > *a) {
+                best = Some((area, url.to_string()));
+            }
+        }
+        if best.is_some() {
+            return best.map(|(_, u)| u);
+        }
+    }
+    obj.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -277,6 +308,10 @@ mod tests {
         assert_eq!(e.playlist_index, Some(1));
         assert_eq!(e.playlist_count, Some(70));
         assert_eq!(e.playlist_title.as_deref(), Some("Chill"));
+        assert_eq!(
+            e.thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/p8eM3MEd_A4/hqdefault.jpg")
+        );
     }
 
     #[test]
