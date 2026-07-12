@@ -37,7 +37,7 @@ pub async fn load(path: &Path) -> Result<Queue> {
     let bytes = match tokio::fs::read(path).await {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            log::info!("state file absent; starting with empty queue");
+            tracing::info!("state file absent; starting with empty queue");
             return Ok(Queue::new());
         }
         Err(e) => {
@@ -49,7 +49,7 @@ pub async fn load(path: &Path) -> Result<Queue> {
         Ok(s) => s,
         Err(e) => {
             let bad = move_aside(path).await?;
-            log::warn!(
+            tracing::warn!(
                 "state file {} failed to parse ({}); moved aside to {} -- starting empty",
                 path.display(),
                 e,
@@ -61,7 +61,7 @@ pub async fn load(path: &Path) -> Result<Queue> {
 
     if state.version > STATE_VERSION {
         let bad = move_aside(path).await?;
-        log::warn!(
+        tracing::warn!(
             "state file {} has unknown version {} (expected <= {}); moved aside to {} -- starting empty",
             path.display(),
             state.version,
@@ -82,7 +82,7 @@ pub async fn load(path: &Path) -> Result<Queue> {
             "failed" => ItemStatus::Failed,
             "cancelled" => ItemStatus::Cancelled,
             other => {
-                log::warn!("unknown item status {other:?} for item {}; skipping", s.id);
+                tracing::warn!("unknown item status {other:?} for item {}; skipping", s.id);
                 continue;
             }
         };
@@ -107,7 +107,7 @@ pub async fn load(path: &Path) -> Result<Queue> {
         }
     }
 
-    log::info!(
+    tracing::info!(
         "loaded queue: {} items, {} pending",
         queue.items.len(),
         queue.items.iter().filter(|i| i.status == ItemStatus::Pending).count()

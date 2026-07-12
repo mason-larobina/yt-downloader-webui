@@ -276,7 +276,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             // Re-snapshot to self-heal.
-                            log::debug!("SSE lagged by {n}; re-snapshotting");
+                            tracing::debug!("SSE lagged by {n}; re-snapshotting");
                             let q = state.queue.lock().await;
                             yield Ok(SseEvent::default()
                                 .event("queue").data(render::render_queue(&q)));

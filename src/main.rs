@@ -23,17 +23,7 @@ use crate::state::AppState;
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Logging: default info, `-v` bumps to web_dl=debug, RUST_LOG honored if set.
-    let filter = if std::env::var_os("RUST_LOG").is_some() {
-        env_logger::Env::default().default_filter_or("info")
-    } else if cli.verbose {
-        env_logger::Env::default().default_filter_or("web_dl=debug,info")
-    } else {
-        env_logger::Env::default().default_filter_or("info")
-    };
-    let _ = env_logger::Builder::from_env(filter)
-        .format_timestamp_secs()
-        .try_init();
+    init_tracing(cli.verbose);
 
     let cfg = cli.into_config()?;
 
@@ -43,12 +33,12 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    log::info!(
-        "web-dl starting: download_dir={} state_file={} addr={} cookies={}",
-        cfg.download_dir.display(),
-        cfg.state_file.display(),
-        cfg.addr,
-        cfg.cookies_browser.as_deref().unwrap_or("none"),
+    tracing::info!(
+        download_dir = %cfg.download_dir.display(),
+        state_file = %cfg.state_file.display(),
+        addr = %cfg.addr,
+        cookies = cfg.cookies_from_browser.as_deref().unwrap_or("none"),
+        "web-dl starting"
     );
 
     // Load persisted queue (restart requeue: active -> pending).
@@ -59,7 +49,7 @@ async fn main() -> Result<()> {
         .filter(|i| i.status == state::ItemStatus::Pending)
         .count();
     if pending > 0 {
-        log::info!("{pending} pending item(s) will be re-started");
+        tracing::info!("{pending} pending item(s) will be re-started");
     }
 
     let state = AppState::new(cfg.clone(), queue);
@@ -75,7 +65,7 @@ async fn main() -> Result<()> {
 
     // Bind listener.
     let listener = TcpListener::bind(&cfg.addr).await?;
-    log::info!("listening on http://{}", cfg.addr);
+    tracing::info!(addr = %cfg.addr, "listening");
 
     // Graceful shutdown: SIGINT / SIGTERM trip the global shutdown token.
     let shutdown_token = state.shutdown.clone();
@@ -96,7 +86,7 @@ async fn main() -> Result<()> {
             _ = ctrl_c => {}
             _ = term => {}
         }
-        log::info!("shutdown signal received");
+        tracing::info!("shutdown signal received");
         shutdown_token.cancel();
     };
     tokio::spawn(shutdown_signal);
@@ -118,7 +108,7 @@ async fn main() -> Result<()> {
 
     // Final flush: write the queue so pending items (and a re-queued active
     // item) survive the restart.
-    log::info!("flushing queue on shutdown");
+    tracing::info!("flushing queue on shutdown");
     let pending = {
         let q = state.queue.lock().await;
         let n = q
@@ -129,7 +119,48 @@ async fn main() -> Result<()> {
         n
     };
     state.persist().await;
-    log::info!("{pending} item(s) queued for re-start; bye");
+    tracing::info!("{pending} item(s) queued for re-start; bye");
 
     Ok(())
+}
+
+/// Initialise the `tracing` subscriber.
+///
+/// Under systemd (journald reachable) logs go to the journal with native
+/// priorities, so `journalctl -p err` / `-p warning` filter by level. When
+/// journald is unavailable (e.g. run in a terminal) it falls back to a
+/// human-readable stderr formatter.
+///
+/// Filter: default `info`; `-v` bumps to `web_dl=debug,info`; `RUST_LOG` is
+/// honoured when set explicitly (see DESIGN Sec. 3).
+fn init_tracing(verbose: bool) {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    let filter = if std::env::var_os("RUST_LOG").is_some() {
+        EnvFilter::from_default_env()
+    } else if verbose {
+        EnvFilter::new("web_dl=debug,info")
+    } else {
+        EnvFilter::new("info")
+    };
+
+    // `tracing_journald::layer()` opens the journal socket; it errors when
+    // journald isn't reachable (non-systemd Linux, non-Linux), in which case
+    // we fall back to a stderr formatter.
+    let journald = tracing_journald::layer().ok();
+    let stderr = if journald.is_none() {
+        // Only colorise when stderr is a real terminal; under `nohup`, a
+        // pipe, or systemd's `StandardError=journal` we emit plain text so
+        // escape codes don't land in the journal/log file.
+        let ansi = std::io::IsTerminal::is_terminal(&std::io::stderr());
+        Some(fmt::layer().with_target(false).with_ansi(ansi))
+    } else {
+        None
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(journald)
+        .with(stderr)
+        .init();
 }

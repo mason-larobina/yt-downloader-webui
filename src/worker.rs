@@ -50,7 +50,7 @@ async fn run(state: Arc<AppState>) {
         // 2. Run yt-dlp for this one item.
         run_item(&state, item).await;
     }
-    log::info!("worker exiting");
+    tracing::info!("worker exiting");
 }
 
 /// Find the first Pending item, flip it to Active, mint a cancel token, and
@@ -85,7 +85,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
             .unwrap_or_else(CancellationToken::new);
         (
             url,
-            state.cfg.cookies_browser.clone(),
+            state.cfg.cookies_from_browser.clone(),
             state.cfg.download_dir.clone(),
             state.cfg.yt_dlp.clone(),
             cancel,
@@ -99,7 +99,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("failed to spawn yt-dlp: {e}");
-            log::error!("{msg}");
+            tracing::error!("{msg}");
             let mut q = state.queue.lock().await;
             if let Some(item) = q.get_mut(item_id) {
                 item.status = ItemStatus::Failed;
@@ -144,7 +144,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
         tokio::select! {
             biased;
             _ = state.shutdown.cancelled() => {
-                log::info!("shutdown: killing yt-dlp for item {item_id}");
+                tracing::info!("shutdown: killing yt-dlp for item {item_id}");
                 let _ = child.kill().await;
                 // Re-queue as Pending so it restarts on next launch.
                 {
@@ -160,7 +160,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
                 return;
             }
             _ = cancel.cancelled() => {
-                log::info!("cancel: killing yt-dlp for item {item_id}");
+                tracing::info!("cancel: killing yt-dlp for item {item_id}");
                 let _ = child.kill().await;
                 drain(&mut rx).await; // best-effort
                 {
@@ -199,7 +199,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
     let status = match child.wait().await {
         Ok(s) => s,
         Err(e) => {
-            log::error!("waiting on yt-dlp: {e}");
+            tracing::error!("waiting on yt-dlp: {e}");
             // Treat as failed.
             let mut q = state.queue.lock().await;
             if let Some(item) = q.get_mut(item_id) {
@@ -223,7 +223,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
             if success {
                 item.status = ItemStatus::Done;
                 item.progress = None;
-                log::info!("item {item_id} done");
+                tracing::info!("item {item_id} done");
             } else {
                 item.status = ItemStatus::Failed;
                 let code = status.code();
@@ -234,7 +234,7 @@ async fn run_item(state: &Arc<AppState>, item_id: u64) {
                     )
                 });
                 item.error = Some(err);
-                log::warn!("item {item_id} failed");
+                tracing::warn!("item {item_id} failed");
             }
         }
     }
@@ -270,7 +270,7 @@ async fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
                 }
             }
             Err(e) => {
-                log::debug!("line read error: {e}");
+                tracing::debug!("line read error: {e}");
                 break;
             }
         }

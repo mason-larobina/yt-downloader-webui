@@ -14,8 +14,8 @@ pub struct Cli {
 
     /// Browser to pull cookies from via --cookies-from-browser. Default: firefox.
     /// Use "none" to disable cookies entirely.
-    #[arg(short, long, value_name = "BROWSER", default_value = "firefox")]
-    pub cookies_browser: String,
+    #[arg(short = 'b', long = "cookies-from-browser", value_name = "BROWSER", default_value = "firefox")]
+    pub cookies_from_browser: String,
 
     /// Path to yt-dlp binary. Default: yt-dlp (PATH).
     #[arg(long, value_name = "PATH", default_value = "yt-dlp")]
@@ -29,9 +29,11 @@ pub struct Cli {
     #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8080")]
     pub addr: String,
 
-    /// Bind 0.0.0.0 instead of loopback. DANGEROUS; prints a warning.
-    #[arg(long)]
-    pub bind_all: bool,
+    /// Bind host/interface. Default: 127.0.0.1 (loopback). Use 0.0.0.0 to listen
+    /// on all interfaces -- DANGEROUS; prints a warning. Overrides the host
+    /// portion of --addr.
+    #[arg(long, value_name = "HOST", default_value = "127.0.0.1")]
+    pub bind: String,
 
     /// Verbose server logs (web_dl=debug).
     #[arg(short, long)]
@@ -42,11 +44,11 @@ pub struct Cli {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub download_dir: PathBuf,
-    pub cookies_browser: Option<String>,
+    pub cookies_from_browser: Option<String>,
     pub yt_dlp: String,
     pub state_file: PathBuf,
     pub addr: SocketAddr,
-    pub bind_all: bool,
+    pub bind: String,
 }
 
 impl Cli {
@@ -63,10 +65,10 @@ impl Cli {
             format!("failed to create download dir: {}", download_dir.display())
         })?;
 
-        let cookies_browser = if self.cookies_browser.eq_ignore_ascii_case("none") {
+        let cookies_from_browser = if self.cookies_from_browser.eq_ignore_ascii_case("none") {
             None
         } else {
-            Some(self.cookies_browser.clone())
+            Some(self.cookies_from_browser.clone())
         };
 
         let state_file = match self.state_file {
@@ -81,38 +83,44 @@ impl Cli {
                 .with_context(|| format!("failed to create state dir: {}", parent.display()))?;
         }
 
-        let addr_str = if self.bind_all {
-            // Replace host portion with 0.0.0.0, preserving port.
-            let port = self
-                .addr
-                .rsplit(':')
-                .next()
-                .unwrap_or("8080")
-                .to_string();
-            format!("0.0.0.0:{port}")
-        } else {
-            self.addr.clone()
-        };
+        // The listen host comes from --bind (default loopback); the port comes
+        // from --addr. So --bind overrides only the host portion of --addr.
+        let port = self
+            .addr
+            .rsplit(':')
+            .next()
+            .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+            .unwrap_or("8080");
+        let addr_str = format!("{}:{port}", self.bind);
         let addr: SocketAddr = addr_str
             .parse()
             .with_context(|| format!("invalid listen address: {addr_str}"))?;
-        if self.bind_all {
-            // Loud warning, printed to stderr so it's visible even with logging off.
+
+        // Loud warning when binding anything other than loopback. Printed to
+        // stderr so it's visible even if the tracing subscriber failed to init;
+        // also emitted via tracing so it lands in journald with a WARN priority.
+        let loopback = matches!(self.bind.as_str(), "127.0.0.1" | "::1" | "localhost");
+        if !loopback {
             eprintln!(
-                "WARNING: --bind-all binds 0.0.0.0. Anyone who can reach this \
-                 machine can run yt-dlp with your Firefox cookies, download any \
-                 file in {}, and delete files. Do not expose to untrusted networks.",
-                download_dir.display()
+                "WARNING: --bind {bind} listens on a non-loopback interface. Anyone who can \
+                 reach this machine can run yt-dlp with your browser cookies, download any \
+                 file in {dir}, and delete files. Do not expose to untrusted networks.",
+                bind = self.bind,
+                dir = download_dir.display(),
+            );
+            tracing::warn!(
+                bind = %self.bind,
+                "listening on a non-loopback interface; anyone reachable can run yt-dlp with your cookies, read/delete files in the download dir"
             );
         }
 
         Ok(Config {
             download_dir,
-            cookies_browser,
+            cookies_from_browser,
             yt_dlp: self.yt_dlp,
             state_file,
             addr,
-            bind_all: self.bind_all,
+            bind: self.bind,
         })
     }
 }

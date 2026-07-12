@@ -43,7 +43,7 @@ directory, using fresh cookies from the local Firefox profile by default.
   `127.0.0.1`. (See Sec. 9 Security.) Multi-*session*/multi-tab is supported and
   is a first-class goal above; multi-*user* is not. Mobile/phone use is
   supported but expects the operator to reach the loopback server via a tunnel
-  (Tailscale / SSH port-forward) or to opt into `--bind-all` (Sec. 9).
+  (Tailscale / SSH port-forward) or to opt into `--bind 0.0.0.0` (Sec. 9).
 - A rich media library (transcoding, tagging, search, thumbnails). The library
   is a flat file list with open/download/delete; no metadata DB. (Queue *does*
   persist across restarts -- see Sec. 8 -- so a restart no longer drops
@@ -66,7 +66,7 @@ directory, using fresh cookies from the local Firefox profile by default.
 | Serde        | `serde` (derive)                                    |
 | Time         | `time` (serde feature, for persisted timestamps)   |
 | Errors       | `anyhow` (app) + `thiserror` (library-ish types)    |
-| Logging      | `log` (facade) + `env_logger` (backend)            |
+| Logging      | `tracing` + `tracing-subscriber` + `tracing-journald` |
 | Templates    | none needed -- the page is one static `index.html`   |
 | Static embed | `include_str!` / `include_bytes!` of `static/`    |
 | Frontend     | htmx core + `htmx-ext-sse` (vendored, embedded)     |
@@ -97,30 +97,43 @@ web-dl [OPTIONS]
 
   -d, --download-dir <DIR>     Where yt-dlp writes files (passed as -P).
                                Default: ~/Downloads
-  -b, --cookies-browser <B>    Browser to pull cookies from via
-                               --cookies-from-browser. Default: firefox.
-                               Use "none" to disable cookies entirely.
+  -b, --cookies-from-browser <B>  Browser to pull cookies from via
+                               --cookies-from-browser (matches the yt-dlp
+                               flag). Default: firefox. Use "none" to
+                               disable cookies entirely.
       --yt-dlp <PATH>          Path to yt-dlp binary. Default: yt-dlp (PATH).
       --state-file <PATH>      Queue persistence file. Default:
                                ~/.local/share/web-dl/queue.json. Resolved
                                via the home/dir crate; parent dir created.
                                Set to a tmpfs path for non-persistence.
       --addr <ADDR>            Listen address. Default: 127.0.0.1:8080.
-      --bind-all               Bind 0.0.0.0 instead of loopback. DANGEROUS;
-                               prints a warning. See Sec. 9.
-  -v, --verbose                Verbose server logs. Bumps the `env_logger`
-                               filter to `web_dl=debug`; `RUST_LOG` is
-                               honored if set explicitly.
+                               Only the port is used; the host is taken
+                               from --bind.
+      --bind <HOST>            Bind host/interface. Default: 127.0.0.1
+                               (loopback). Use 0.0.0.0 to listen on all
+                               interfaces -- DANGEROUS; prints a warning.
+                               Overrides the host portion of --addr. See
+                               Sec. 9.
+  -v, --verbose                Verbose server logs. Bumps the `EnvFilter` to
+                               `web_dl=debug,info`; `RUST_LOG` is honored if
+                               set explicitly.
 ```
 
 At startup the app runs `yt-dlp --version`; if it is missing or fails it exits
 with a clear, actionable message (install yt-dlp / fix `--yt-dlp`).
 
-`env_logger::init()` runs at startup (defaulting to `info`, bumping to
-`web_dl=debug` under `-v`, and honoring `RUST_LOG` when set explicitly). Server
-request/error logs, yt-dlp lifecycle messages, and the `--bind-all` warning all
-flow through `log::info!`/`warn!`. The `--bind-all` warning is additionally
-printed to stderr before binding so it is visible even with logging disabled.
+`tracing_subscriber` is installed at startup with an `EnvFilter` (defaulting
+to `info`, bumping to `web_dl=debug,info` under `-v`, and honoring `RUST_LOG`
+when set explicitly). When journald is reachable (i.e. running under systemd)
+logs go to the journal via `tracing-journald` with **native priorities**, so
+`journalctl -p err` / `-p warning` filter by level; otherwise it falls back to
+a human-readable stderr formatter (ANSI only when stderr is a terminal, so
+escape codes never land in the journal or a redirected log file). Server
+request/error logs, yt-dlp lifecycle messages, and the `--bind` warning all
+flow through `tracing::info!`/`warn!`. The `--bind` warning is additionally
+printed to stderr before binding so it is visible even if the subscriber
+failed to install. For a `systemd --user` unit, set `SyslogIdentifier=web-dl`
+and `StandardError=journal` (the latter is the default for user units).
 
 `~/Downloads` is resolved via the `HOME` env var (falling back to the process's
 home as reported by the `home`/`dirs` crate). The resolved path is created if
@@ -579,16 +592,17 @@ item and shutting the server down share one code path.
 
 ## 9. Security
 
-- **Bind loopback only by default.** `--bind-all` exists but prints a loud
-  warning. Anyone who can reach the server can run `yt-dlp` against arbitrary
-  URLs (limited to what `--cookies-from-browser firefox` allows), read live
-  download status, **download any file in your download dir to their device,
-  and delete files** (see `/file/:name`, `/delete/:name` below) -- i.e.
-  effectively act as your Firefox session for these sites *and* as a file
-  server for that directory. Do not expose to a network. **Mobile use**
-  requires reaching the loopback server: prefer a tunnel (Tailscale / SSH
-  port-forward) so the surface stays authenticated/encrypted; `--bind-all` is
-  the escape hatch and prints its warning at startup.
+- **Bind loopback only by default.** `--bind` defaults to `127.0.0.1`; any
+  non-loopback value (e.g. `--bind 0.0.0.0`) prints a loud warning. Anyone who
+  can reach the server can run `yt-dlp` against arbitrary URLs (limited to
+  what `--cookies-from-browser firefox` allows), read live download status,
+  **download any file in your download dir to their device, and delete files**
+  (see `/file/:name`, `/delete/:name` below) -- i.e. effectively act as your
+  Firefox session for these sites *and* as a file server for that directory.
+  Do not expose to a network. **Mobile use** requires reaching the loopback
+  server: prefer a tunnel (Tailscale / SSH port-forward) so the surface stays
+  authenticated/encrypted; `--bind 0.0.0.0` is the escape hatch and prints its
+  warning at startup.
 - **No shell.** URLs are `Command::arg`s, never concatenated into a shell
   string -> no command injection.
 - **HTML-escape every fragment** sent over SSE; log lines are untrusted text.
@@ -648,7 +662,7 @@ Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
   be taken if observed, not preemptively.
 - **Firefox profile lock.** Modern yt-dlp copies `cookies.sqlite` and works
   while Firefox is running; if an older yt-dlp errors, surface the error in the
-  log (and document `--cookies-browser none` as the escape hatch).
+  log (and document `--cookies-from-browser none` as the escape hatch).
 - **Queue identity is server-owned, not heuristic.** Unlike a batch approach
   that leans on yt-dlp's `Downloading video N of M` / `Destination:` strings,
   we assign queue ids at enqueue time and track per-item state ourselves; we

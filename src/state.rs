@@ -52,7 +52,7 @@ impl AppState {
             (q.next_id, q.items.clone())
         };
         if let Err(e) = crate::persist::save(&self.cfg.state_file, next_id, &items).await {
-            log::warn!("failed to persist queue: {e:#}");
+            tracing::warn!("failed to persist queue: {e:#}");
         }
     }
 }

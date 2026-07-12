@@ -15,8 +15,9 @@ serde_json = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 anyhow = "1"
 thiserror = "2"
-log = "0.4"
-env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-journald = "0.3"
 dirs = "6"
 futures-util = "0.3"
 mime_guess = "2"
