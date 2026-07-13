@@ -2,6 +2,13 @@
 name = "yt-downloader-webui"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/mason-larobina/yt-downloader-webui"
+readme = "README.md"
+authors = ["Mason Larobina <mason.larobina@pm.me>"]
+description = "A standalone, single-binary web UI wrapper around yt-dlp: paste URLs, queue downloads, and watch live progress in the browser."
+license = "MIT"
+keywords = ["yt-dlp", "youtube", "downloader", "webui", "htmx"]
+categories = ["multimedia::video", "command-line-utilities"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "process", "io-util", "sync", "time"] }
