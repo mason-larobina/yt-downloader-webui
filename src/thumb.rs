@@ -288,7 +288,7 @@ mod tests {
     /// A fresh temp dir for filesystem helper tests.
     fn tempfile_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "web-dl-thumb-test-{}-{}",
+            "yt-downloader-webui-thumb-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -346,7 +346,7 @@ mod tests {
     async fn fetch_caches_real_thumbnail() {
         let cache = tempfile_dir();
         let client = reqwest::Client::builder()
-            .user_agent("web-dl-test")
+            .user_agent("yt-downloader-webui-test")
             .build()
             .unwrap();
         let url = "https://i.ytimg.com/vi/p8eM3MEd_A4/hqdefault.jpg";

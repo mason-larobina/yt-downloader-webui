@@ -34,7 +34,7 @@ impl AppState {
     pub fn new(cfg: Config, queue: Queue) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAP);
         let http = reqwest::Client::builder()
-            .user_agent(concat!("web-dl/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("yt-downloader-webui/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("reqwest client build");
         Arc::new(AppState {

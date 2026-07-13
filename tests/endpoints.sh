@@ -16,13 +16,13 @@
 #   tests/endpoints.sh
 #
 # Env:
-#   WEB_DL_BINARY   path to a prebuilt web-dl binary (default: builds one)
+#   YT_DOWNLOADER_WEBUI_BINARY   path to a prebuilt yt-downloader-webui binary (default: builds one)
 #   PORT            listen port (default: 18082)
 set -euo pipefail
 
 PORT="${PORT:-18082}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${WEB_DL_BINARY:-$ROOT/target/release/web-dl}"
+BIN="${YT_DOWNLOADER_WEBUI_BINARY:-$ROOT/target/release/yt-downloader-webui}"
 
 # Wait for the server to accept connections on $1 (up to ~5s).
 wait_for_port() {
@@ -37,7 +37,7 @@ wait_for_port() {
   return 1
 }
 
-WORK="$(mktemp -d -t web-dl-ep.XXXXXX)"
+WORK="$(mktemp -d -t yt-downloader-webui-ep.XXXXXX)"
 DL="$WORK/dl"; STATE="$WORK/state"; mkdir -p "$DL" "$STATE"
 PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$WORK"; }

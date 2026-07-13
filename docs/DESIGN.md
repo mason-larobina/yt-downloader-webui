@@ -1,4 +1,4 @@
-# DESIGN.md -- `web-dl`
+# DESIGN.md -- `yt-downloader-webui`
 
 A standalone, single-binary web wrapper around `yt-dlp` for personal use. You
 paste one or more video URLs into a textarea, hit *Download*, and they are
@@ -100,7 +100,7 @@ a one-time convenience tax.
 ## 3. CLI
 
 ```
-web-dl [OPTIONS]
+yt-downloader-webui [OPTIONS]
 
   -d, --download-dir <DIR>     Where yt-dlp writes files (passed as -P).
                                Default: ~/Downloads
@@ -111,7 +111,7 @@ web-dl [OPTIONS]
       --yt-dlp <PATH>          Path to yt-dlp binary. Default: yt-dlp (PATH).
       --state-dir <DIR>        Queue persistence directory (one JSON file
                                per item, named <unix_ts>.json). Default:
-                               ~/.local/share/web-dl/queue/. Resolved via
+                               ~/.local/share/yt-downloader-webui/queue/. Resolved via
                                the home/dir crate; created at startup.
       --bind <ADDR>             Bind address (host:port). Default:
                                127.0.0.1:8080 (loopback). Use
@@ -119,7 +119,7 @@ web-dl [OPTIONS]
                                interfaces -- DANGEROUS; prints a warning.
                                See Sec. 9.
   -v, --verbose                Verbose server logs. Bumps the `EnvFilter` to
-                               `web_dl=debug,info`; `RUST_LOG` is honored if
+                               `yt_downloader_webui=debug,info`; `RUST_LOG` is honored if
                                set explicitly.
 ```
 
@@ -127,7 +127,7 @@ At startup the app runs `yt-dlp --version`; if it is missing or fails it exits
 with a clear, actionable message (install yt-dlp / fix `--yt-dlp`).
 
 `tracing_subscriber` is installed at startup with an `EnvFilter` (defaulting
-to `info`, bumping to `web_dl=debug,info` under `-v`, and honoring `RUST_LOG`
+to `info`, bumping to `yt_downloader_webui=debug,info` under `-v`, and honoring `RUST_LOG`
 when set explicitly). When journald is reachable (i.e. running under systemd)
 logs go to the journal via `tracing-journald` with **native priorities**, so
 `journalctl -p err` / `-p warning` filter by level; otherwise it falls back to
@@ -136,12 +136,12 @@ escape codes never land in the journal or a redirected log file). Server
 request/error logs, yt-dlp lifecycle messages, and the `--bind` warning all
 flow through `tracing::info!`/`warn!`. The `--bind` warning is additionally
 printed to stderr before binding so it is visible even if the subscriber
-failed to install. For a `systemd --user` unit, set `SyslogIdentifier=web-dl`
+failed to install. For a `systemd --user` unit, set `SyslogIdentifier=yt-downloader-webui`
 and `StandardError=journal` (the latter is the default for user units).
 
 `~/Downloads` is resolved via the `HOME` env var (falling back to the process's
 home as reported by the `home`/`dirs` crate). The resolved path is created if
-missing. The `--state-dir` default (`~/.local/share/web-dl/queue/`) is
+missing. The `--state-dir` default (`~/.local/share/yt-downloader-webui/queue/`) is
 resolved the same way; the directory is created at startup.
 
 Before serving, the app **loads every `<ts>.json` in the state dir** (Sec. 8)
@@ -425,7 +425,7 @@ Single page, vertically stacked:
 
 ```
 +----------------------------------------------+
-| web-dl   -> ~/Downloads   cookies: firefox    |  <- header (dir, browser, link)
+| yt-downloader-webui   -> ~/Downloads   cookies: firefox    |  <- header (dir, browser, link)
 +----------------------------------------------+
 | +------------------------------------------+ |
 | | https://...                              | |  <- large <textarea>
@@ -589,7 +589,7 @@ explicitly in v1.
 ### Persistence (one `<ts>.json` per item)
 
 The queue is persisted as **one JSON file per item** in the state directory
-(path from `--state-dir`, default `~/.local/share/web-dl/queue/`). Each file is
+(path from `--state-dir`, default `~/.local/share/yt-downloader-webui/queue/`). Each file is
 named `<unix_ts>.json`, where the timestamp is the item's enqueue second; if
 a file with that timestamp already exists the filename timestamp is
 **numerically incremented** (`<ts>.json`, `<ts+1>.json`, ...) until a free slot
@@ -713,7 +713,7 @@ item and shutting the server down share one code path.
 ## 10. Project layout
 
 ```
-web-dl/
+yt-downloader-webui/
 +-- Cargo.toml
 +-- DESIGN.md
 +-- src/

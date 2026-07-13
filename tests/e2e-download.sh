@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for the web-dl server.
+# End-to-end smoke test for the yt-downloader-webui server.
 #
 # Builds the release binary, starts the server with --cookies-from-browser none
 # (no Firefox in CI/sandbox), then drives the new header flow end-to-end:
@@ -17,7 +17,7 @@
 #   tests/e2e-download.sh [URL]
 #
 # Env:
-#   WEB_DL_BINARY   path to a prebuilt web-dl binary (default: builds one)
+#   YT_DOWNLOADER_WEBUI_BINARY   path to a prebuilt yt-downloader-webui binary (default: builds one)
 #   PORT            listen port (default: 18080)
 #   TIMEOUT         SSE capture window in seconds (default: 90)
 set -euo pipefail
@@ -27,9 +27,9 @@ PORT="${PORT:-18080}"
 TIMEOUT="${TIMEOUT:-90}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${WEB_DL_BINARY:-$ROOT/target/release/web-dl}"
+BIN="${YT_DOWNLOADER_WEBUI_BINARY:-$ROOT/target/release/yt-downloader-webui}"
 
-WORK="$(mktemp -d -t web-dl-e2e.XXXXXX)"
+WORK="$(mktemp -d -t yt-downloader-webui-e2e.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf '$WORK'" EXIT
 DL="$WORK/dl"; STATE="$WORK/state"; mkdir -p "$DL" "$STATE"

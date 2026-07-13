@@ -36,7 +36,7 @@ PLAYLIST_URL="${1:-https://www.youtube.com/playlist?list=PLEueSxy2K1ZYInz4AIBbSu
 SINGLE_VIDEO_URL="${2:-}"     # "" -> auto-derive from first playlist entry
 BROWSER="${3:-firefox}"
 
-DIR="$(mktemp -d -t web-dl-probe-flat.XXXXXX)"
+DIR="$(mktemp -d -t yt-downloader-webui-probe-flat.XXXXXX)"
 #trap 'rm -rf "$DIR"' EXIT
 
 # Cookie flag, mirroring src/ytdlp.rs / src/config.rs.

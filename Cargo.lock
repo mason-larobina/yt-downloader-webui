@@ -1787,35 +1787,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-dl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "askama",
- "async-stream",
- "axum",
- "clap",
- "dirs",
- "form_urlencoded",
- "futures-util",
- "mime_guess",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "thiserror",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-journald",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "web-sys"
 version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1968,6 +1939,35 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
+]
+
+[[package]]
+name = "yt-downloader-webui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "askama",
+ "async-stream",
+ "axum",
+ "clap",
+ "dirs",
+ "form_urlencoded",
+ "futures-util",
+ "mime_guess",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
 ]
 
 [[package]]

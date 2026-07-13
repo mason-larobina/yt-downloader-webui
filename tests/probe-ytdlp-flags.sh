@@ -16,7 +16,7 @@
 set -euo pipefail
 
 URL="${1:-https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4}"
-DIR="${2:-$(mktemp -d -t web-dl-probe.XXXXXX)}"
+DIR="${2:-$(mktemp -d -t yt-downloader-webui-probe.XXXXXX)}"
 trap 'rm -rf "$DIR"' EXIT
 
 echo "=== yt-dlp version ==="

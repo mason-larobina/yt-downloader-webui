@@ -14,7 +14,7 @@
 #   tests/persistence-restart.sh [URL]
 #
 # Env:
-#   WEB_DL_BINARY   path to a prebuilt web-dl binary (default: builds one)
+#   YT_DOWNLOADER_WEBUI_BINARY   path to a prebuilt yt-downloader-webui binary (default: builds one)
 #   PORT            listen port (default: 18081)
 set -euo pipefail
 
@@ -22,9 +22,9 @@ URL="${1:-https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_7
 PORT="${PORT:-18081}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${WEB_DL_BINARY:-$ROOT/target/release/web-dl}"
+BIN="${YT_DOWNLOADER_WEBUI_BINARY:-$ROOT/target/release/yt-downloader-webui}"
 
-WORK="$(mktemp -d -t web-dl-persist.XXXXXX)"
+WORK="$(mktemp -d -t yt-downloader-webui-persist.XXXXXX)"
 DL="$WORK/dl"; STATE="$WORK/state"; mkdir -p "$DL" "$STATE"
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$WORK"; }
 trap cleanup EXIT

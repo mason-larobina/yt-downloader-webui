@@ -1,4 +1,4 @@
-//! `web-dl` entry point: CLI -> Config -> load queue -> start server.
+//! `yt-downloader-webui` entry point: CLI -> Config -> load queue -> start server.
 mod config;
 mod events;
 mod library;
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
         state_dir = %cfg.state_dir.display(),
         addr = %cfg.addr,
         cookies = cfg.cookies_from_browser.as_deref().unwrap_or("none"),
-        "web-dl starting"
+        "yt-downloader-webui starting"
     );
 
     // Load persisted queue (restart requeue: active -> pending).
@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
 /// journald is unavailable (e.g. run in a terminal) it falls back to a
 /// human-readable stderr formatter.
 ///
-/// Filter: default `info`; `-v` bumps to `web_dl=debug,info`; `RUST_LOG` is
+/// Filter: default `info`; `-v` bumps to `yt_downloader_webui=debug,info`; `RUST_LOG` is
 /// honoured when set explicitly (see DESIGN Sec. 3).
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
@@ -155,7 +155,7 @@ fn init_tracing(verbose: bool) {
     let filter = if std::env::var_os("RUST_LOG").is_some() {
         EnvFilter::from_default_env()
     } else if verbose {
-        EnvFilter::new("web_dl=debug,info")
+        EnvFilter::new("yt_downloader_webui=debug,info")
     } else {
         EnvFilter::new("info")
     };
