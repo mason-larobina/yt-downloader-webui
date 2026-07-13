@@ -1,5 +1,5 @@
 {%- if files_empty %}
-<div id="library" class="library"><div class="empty">no files</div></div>
+    <div id="library" class="library"><div class="empty">no files</div></div>
 {%- else %}
-<div id="library" class="library"><div class="lhead">library ({{ n }} files) <button class="refresh" hx-get="/library" hx-target="#library" hx-swap="outerHTML">refresh</button></div>{% for r in rows %}{{ r|safe }}{% endfor %}</div>
+    <div id="library" class="library"><div class="lhead">library ({{ n }} files) <button class="refresh" hx-get="/library" hx-target="#library" hx-swap="outerHTML">refresh</button></div>{% for r in rows %}{{ r|safe }}{% endfor %}</div>
 {%- endif %}

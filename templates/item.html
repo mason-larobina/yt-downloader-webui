@@ -1,87 +1,87 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ label }} &mdash; details</title>
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js"></script>
-</head>
-<body>
-<div class="item-page">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ label }} &mdash; details</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js"></script>
+  </head>
+  <body>
+    <div class="item-page">
 
-  <header class="ip-topbar">
-    <a class="ip-back" href="/">&larr; downloads</a>
-    <span class="ip-badge {{ status }}">{{ status }}</span>
-  </header>
+      <header class="ip-topbar">
+        <a class="ip-back" href="/">&larr; downloads</a>
+        <span class="ip-badge {{ status }}">{{ status }}</span>
+      </header>
 
-  <div class="ip-thumb">
-    {% if let Some(name) = thumb %}
-    <img src="/thumb/{{ name }}" alt="">
-    {% else %}
-    <div class="ip-thumb-placeholder"></div>
-    {% endif %}
-  </div>
+      <div class="ip-thumb">
+        {% if let Some(name) = thumb %}
+          <img src="/thumb/{{ name }}" alt="">
+        {% else %}
+          <div class="ip-thumb-placeholder"></div>
+        {% endif %}
+      </div>
 
-  <div class="ip-actions">
-    {% if status == "done" %}{% if let Some(name) = filename %}
-    <a class="big-btn view" href="/file/{{ name|urlencode_strict }}?inline=1" target="_blank" rel="noopener">&#9654; View</a>
-    <a class="big-btn download" href="/file/{{ name|urlencode_strict }}?download=1">&#8595; Download</a>
-    <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete {{ name }} from the server?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
-    {% endif %}{% else if status == "pending" || status == "active" %}
-    <button class="big-btn cancel" hx-post="/cancel/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#9632; Cancel</button>
-    {% else if status == "failed" || status == "cancelled" %}
-    <button class="big-btn retry" hx-post="/retry/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#8635; Retry</button>
-    <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete this item from the queue?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
-    {% endif %}
-  </div>
+      <div class="ip-actions">
+        {% if status == "done" %}{% if let Some(name) = filename %}
+          <a class="big-btn view" href="/file/{{ name|urlencode_strict }}?inline=1" target="_blank" rel="noopener">&#9654; View</a>
+          <a class="big-btn download" href="/file/{{ name|urlencode_strict }}?download=1">&#8595; Download</a>
+          <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete {{ name }} from the server?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
+        {% endif %}{% else if status == "pending" || status == "active" %}
+          <button class="big-btn cancel" hx-post="/cancel/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#9632; Cancel</button>
+        {% else if status == "failed" || status == "cancelled" %}
+          <button class="big-btn retry" hx-post="/retry/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#8635; Retry</button>
+          <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete this item from the queue?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
+        {% endif %}
+      </div>
 
-  <section class="ip-details">
-    <h1 class="ip-title">{{ label }}</h1>
-    <dl class="ip-meta">
-      <dt>url</dt><dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>
-      <dt>status</dt><dd class="ip-status {{ status }}">{{ status }}</dd>
-      {% if !dur.is_empty() %}<dt>duration</dt><dd>{{ dur }}</dd>{% endif %}
-      {% if let Some(name) = filename %}<dt>file</dt><dd>{{ name }}</dd>{% endif %}
-      <dt>enqueued</dt><dd>{{ enqueued }}</dd>
-    </dl>
-    {% if status == "failed" %}{% if let Some(e) = error %}<div class="ip-err">{{ e }}</div>{% endif %}{% endif %}
-  </section>
+      <section class="ip-details">
+        <h1 class="ip-title">{{ label }}</h1>
+        <dl class="ip-meta">
+          <dt>url</dt><dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>
+          <dt>status</dt><dd class="ip-status {{ status }}">{{ status }}</dd>
+          {% if !dur.is_empty() %}<dt>duration</dt><dd>{{ dur }}</dd>{% endif %}
+          {% if let Some(name) = filename %}<dt>file</dt><dd>{{ name }}</dd>{% endif %}
+          <dt>enqueued</dt><dd>{{ enqueued }}</dd>
+        </dl>
+        {% if status == "failed" %}{% if let Some(e) = error %}<div class="ip-err">{{ e }}</div>{% endif %}{% endif %}
+      </section>
 
-  <section class="ip-logs">
-    <h2 class="ip-logs-head">yt-dlp output</h2>
-    <div id="ip-body" class="ip-body">
-      <div id="item-log-lines" class="ip-lines"{% if polling %} hx-get="/logs/{{ id }}?lines=1" hx-trigger="every 2s" hx-target="this" hx-swap="innerHTML"{% endif %}>{% if lines.is_empty() %}<div class="log-empty">(no output yet)</div>{% else %}{% for l in lines %}<div class="logline">{{ l }}</div>{% endfor %}{% endif %}</div>
+      <section class="ip-logs">
+        <h2 class="ip-logs-head">yt-dlp output</h2>
+        <div id="ip-body" class="ip-body">
+          <div id="item-log-lines" class="ip-lines"{% if polling %} hx-get="/logs/{{ id }}?lines=1" hx-trigger="every 2s" hx-target="this" hx-swap="innerHTML"{% endif %}>{% if lines.is_empty() %}<div class="log-empty">(no output yet)</div>{% else %}{% for l in lines %}<div class="logline">{{ l }}</div>{% endfor %}{% endif %}</div>
+        </div>
+      </section>
+
     </div>
-  </section>
 
-</div>
+    <div id="item-ack" class="ack-toast"></div>
 
-<div id="item-ack" class="ack-toast"></div>
+    <script>
+      // Escape navigates back to the downloads list (mirrors the "<- downloads"
+      // back link). Only acts when there's history to return to, otherwise it
+      // falls back to a hard navigate to "/".
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        if (window.history.length > 1) window.history.back();
+        else window.location.href = '/';
+      });
 
-<script>
-  // Escape navigates back to the downloads list (mirrors the "<- downloads"
-  // back link). Only acts when there's history to return to, otherwise it
-  // falls back to a hard navigate to "/".
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    if (window.history.length > 1) window.history.back();
-    else window.location.href = '/';
-  });
-
-  // Transient ack toast: POST actions (cancel/retry/delete) swap a short
-  // confirmation into #item-ack; auto-clear after a few seconds.
-  (function () {
-    var timer = null;
-    document.body.addEventListener('htmx:afterSwap', function (e) {
-      var target = e.detail && e.detail.target;
-      if (!target || target.id !== 'item-ack') return;
-      if (!target.textContent.trim()) return;
-      clearTimeout(timer);
-      timer = setTimeout(function () { target.textContent = ''; }, 4000);
-    });
-  })();
-</script>
-</body>
+      // Transient ack toast: POST actions (cancel/retry/delete) swap a short
+      // confirmation into #item-ack; auto-clear after a few seconds.
+      (function () {
+        var timer = null;
+        document.body.addEventListener('htmx:afterSwap', function (e) {
+          var target = e.detail && e.detail.target;
+          if (!target || target.id !== 'item-ack') return;
+          if (!target.textContent.trim()) return;
+          clearTimeout(timer);
+          timer = setTimeout(function () { target.textContent = ''; }, 4000);
+        });
+      })();
+    </script>
+  </body>
 </html>

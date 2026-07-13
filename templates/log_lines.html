@@ -1,7 +1,7 @@
 {%- if lines.is_empty() %}
-<div class="log-empty">(no output yet)</div>
+    <div class="log-empty">(no output yet)</div>
 {%- else %}
-{%- for l in lines %}
-<div class="logline">{{ l }}</div>
-{%- endfor %}
+    {%- for l in lines %}
+        <div class="logline">{{ l }}</div>
+    {%- endfor %}
 {%- endif %}

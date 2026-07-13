@@ -1,5 +1,5 @@
 {%- if items_empty %}
-<div class="cards-head"><span class="cards-title">downloads</span></div><div class="cards-list"><div class="empty">no videos yet &mdash; paste a URL</div></div>
+    <div class="cards-head"><span class="cards-title">downloads</span></div><div class="cards-list"><div class="empty">no videos yet &mdash; paste a URL</div></div>
 {%- else %}
-<div class="cards-head"><span class="cards-title">downloads</span><span class="cards-count">{{ total }} total, {{ pending }} pending</span>{% if clear > 0 %}<button class="clear" hx-post="/clear" hx-target="#ack" hx-swap="innerHTML">clear {{ clear }}</button>{% endif %}</div><div class="cards-list">{% for c in cards %}{{ c|safe }}{% endfor %}</div>
+    <div class="cards-head"><span class="cards-title">downloads</span><span class="cards-count">{{ total }} total, {{ pending }} pending</span>{% if clear > 0 %}<button class="clear" hx-post="/clear" hx-target="#ack" hx-swap="innerHTML">clear {{ clear }}</button>{% endif %}</div><div class="cards-list">{% for c in cards %}{{ c|safe }}{% endfor %}</div>
 {%- endif %}
