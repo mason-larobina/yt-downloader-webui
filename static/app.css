@@ -53,7 +53,7 @@ a { color: var(--brand-solid); text-decoration: none; font-weight: 500; }
 a:hover { text-decoration: underline; }
 em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
 
-/* ---------- layout: header on top, cards + logs below ---------- */
+/* ---------- layout: header on top, cards below ---------- */
 .app {
   display: flex;
   flex-direction: column;
@@ -62,9 +62,6 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
 .main {
   flex: 1 1 auto;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 440px;
-  gap: 1px;
   background: var(--line);
 }
 .pane {
@@ -75,15 +72,9 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
   flex-direction: column;
 }
 .pane-cards  { background: var(--bg); }
-.pane-logs   { background: var(--bg); }
 
-@media (max-width: 1100px) {
-  .main { grid-template-columns: minmax(0, 1fr); }
-  .pane-logs { display: none; }
-}
 @media (max-width: 760px) {
   .app { height: auto; }
-  .main { grid-template-rows: auto auto; }
   .pane { min-height: 200px; }
   .pane-cards { min-height: 300px; }
 }
@@ -354,35 +345,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: rgba(244,63,94,0.05);
 }
 
-/* ---------- logs pane ---------- */
-.pane-logs { min-width: 0; }
-.lp-empty { color: var(--muted); font-style: italic; padding: 28px 18px; font-weight: 500; }
-.lp-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 12px 14px; border-bottom: 1px solid var(--line);
-  background: var(--bg-2); flex: 0 0 auto;
-}
-.lp-head .lp-title { font-weight: 800; letter-spacing: -0.01em; }
-.lp-head .lp-label { color: var(--muted); font-family: monospace; font-size: 12px; font-weight: 600;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
-.lp-head .lp-status { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; }
-.lp-status.active { color: var(--active); }
-.lp-status.done { color: var(--done); }
-.lp-status.failed, .lp-status.cancelled { color: var(--failed); }
-.lp-status.pending { color: var(--pending); }
-.lp-close {
-  background: var(--bg); border: 1px solid var(--line-2); color: var(--muted);
-  padding: 3px 10px; font-size: 12px; font-weight: 600; border-radius: 6px;
-}
-.lp-close:hover { color: var(--fg); background: var(--bg-3); }
-.lp-body {
-  flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 140px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-  background: var(--bg-inset);
-}
-.lp-lines { white-space: pre-wrap; word-break: break-all; }
-.lp-lines .logline { color: var(--fg); }
-.lp-empty-lines { color: var(--muted); font-style: italic; }
+/* ---------- log line rendering (shared by probe stream + item page) ----- */
+.log-empty { color: var(--muted); font-style: italic; }
 
 /* ---------- floating progress banner (spotify-like) ---------- */
 .banner {
@@ -429,4 +393,88 @@ button:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 760px) {
   .banner { width: calc(100vw - 16px); bottom: 8px; }
   .bn-img { width: 72px; height: 41px; }
+}
+
+/* ---------- item details page (/item/:id) ---------- */
+.item-page {
+  max-width: 880px; margin: 0 auto; padding: 0 20px 80px;
+  min-height: 100vh; background: var(--bg);
+}
+.ip-topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 0; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; background: var(--bg); z-index: 10;
+}
+.ip-back { font-weight: 700; font-size: 14px; }
+.ip-back:hover { text-decoration: none; }
+.ip-badge {
+  font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 4px 10px; border-radius: 6px; color: #fff; background: var(--pending);
+}
+.ip-badge.active { background: var(--active); }
+.ip-badge.done { background: var(--done); }
+.ip-badge.failed { background: var(--failed); }
+.ip-badge.cancelled { background: var(--cancelled); }
+.ip-badge.pending { background: var(--pending); }
+
+/* Full-width thumbnail. */
+.ip-thumb { margin-top: 20px; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden;
+  background: var(--bg-inset); box-shadow: var(--shadow-md); }
+.ip-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ip-thumb-placeholder { width: 100%; height: 100%; background:
+  repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 12px, var(--bg-3) 12px, var(--bg-3) 24px); }
+
+/* Big text action buttons. */
+.ip-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.big-btn {
+  flex: 1 1 160px; min-height: 56px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 17px; font-weight: 800; letter-spacing: -0.01em;
+  border-radius: 12px; padding: 14px 20px; cursor: pointer; text-decoration: none;
+  border: 2px solid transparent; box-shadow: var(--shadow-sm);
+  transition: filter .12s ease, transform .05s ease, background .12s ease, border-color .12s ease;
+}
+.big-btn:hover { text-decoration: none; filter: brightness(1.05); }
+.big-btn:active { transform: translateY(1px); }
+.big-btn.view     { background: var(--done); color: #fff; }
+.big-btn.download { background: var(--brand); color: #fff; }
+.big-btn.delete   { background: var(--bg-2); color: var(--failed); border-color: rgba(244,63,94,0.4); }
+.big-btn.cancel   { background: var(--cancelled); color: #fff; }
+.big-btn.retry    { background: #0d9488; color: #fff; }
+
+/* Metadata. */
+.ip-details { margin-top: 28px; }
+.ip-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; word-break: break-word; margin: 0; }
+.ip-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 16px 0 0;
+  font-size: 14px; }
+.ip-meta dt { color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 11px; align-self: center; }
+.ip-meta dd { margin: 0; font-weight: 500; word-break: break-all; }
+.ip-status.active { color: var(--active); }
+.ip-status.done { color: var(--done); }
+.ip-status.failed, .ip-status.cancelled { color: var(--failed); }
+.ip-status.pending { color: var(--pending); }
+.ip-err {
+  margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+  background: rgba(244,63,94,0.06); border: 1px solid rgba(244,63,94,0.25);
+  color: var(--failed); font-size: 13px; font-weight: 600; word-break: break-word;
+}
+
+/* Full log output. */
+.ip-logs { margin-top: 28px; }
+.ip-logs-head { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin: 0 0 10px; }
+.ip-body {
+  max-height: 60vh; overflow-y: auto; border-radius: 12px;
+  background: var(--bg-inset); border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  padding: 12px 14px;
+}
+.ip-lines { white-space: pre-wrap; word-break: break-all; }
+.ip-lines .logline { color: var(--fg); }
+.ip-gone { color: var(--muted); font-style: italic; padding: 60px 0; text-align: center; font-weight: 600; }
+
+@media (max-width: 760px) {
+  .item-page { padding: 0 14px 60px; }
+  .big-btn { flex: 1 1 100%; }
 }

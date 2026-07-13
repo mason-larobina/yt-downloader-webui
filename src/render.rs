@@ -289,34 +289,60 @@ pub fn render_queue(queue: &Queue) -> String {
     .unwrap_or_default()
 }
 
-// ----------------------------- #logs-pane ----------------------------------
+// ----------------------------- #item (details page) ------------------------
 
-/// Render the full logs-pane fragment (swapped into `#logs-pane` by GET
-/// /logs/:id). The inner `#lp-lines` polls GET /logs/:id?lines=1 every 2s
-/// while the item is still in flight, so the pane auto-updates without
-/// resetting the user's scroll position.
+/// The full standalone details page served at GET /item/:id. Renders the
+/// full thumbnail, status badge, big text action buttons (View / Download /
+/// Delete for a finished file; Cancel while in flight; Retry / Delete for a
+/// terminal failure), the video's metadata, and the complete yt-dlp output
+/// (polled while the item may still be producing lines).
 #[derive(Template)]
-#[template(path = "logs_pane.html")]
-struct LogsPane<'a> {
+#[template(path = "item.html")]
+struct ItemPage<'a> {
     id: u64,
-    label: &'a str,
     status: &'a str,
-    /// Polling only happens while the download may still produce output.
+    label: &'a str,
+    url: &'a str,
+    thumb: Option<&'a str>,
+    filename: Option<&'a str>,
+    dur: String,
+    error: Option<&'a str>,
+    enqueued: String,
+    /// Poll the log body only while the download may still emit output.
     polling: bool,
-    /// Pre-trimmed log lines.
     lines: Vec<String>,
 }
 
-pub fn render_logs_pane(item: &QueueItem) -> String {
+/// Render the full HTML document for GET /item/:id. Returns a complete
+/// `<!DOCTYPE html>` page (the handler wraps it with the text/html headers).
+pub fn render_item_page(item: &QueueItem) -> String {
     let lines: Vec<String> = item
         .logs
         .iter()
         .map(|l| l.trim_end_matches('\n').to_string())
         .collect();
-    LogsPane {
+    ItemPage {
         id: item.id,
-        label: item.label(),
         status: item.status.as_str(),
+        // On the details page prefer the human title over the on-disk filename
+        // (the filename is listed separately in the metadata) so the headline
+        // reads as a title rather than a `video-12345.webm` slug.
+        label: item
+            .title
+            .as_deref()
+            .or(item.filename.as_deref())
+            .unwrap_or(&item.url),
+        url: &item.url,
+        thumb: item.thumbnail.as_deref(),
+        filename: item.filename.as_deref(),
+        dur: human_duration(item.duration),
+        error: item.error.as_deref(),
+        enqueued: item
+            .enqueued_at
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day] [hour]:[minute]"
+            ))
+            .unwrap_or_default(),
         polling: matches!(item.status, ItemStatus::Pending | ItemStatus::Active),
         lines,
     }
@@ -324,7 +350,27 @@ pub fn render_logs_pane(item: &QueueItem) -> String {
     .unwrap_or_default()
 }
 
-/// Render the inner log-line divs for an item (the body of `#lp-lines`).
+/// The standalone "this video is no longer in the queue" page served by
+/// GET /item/:id when the item has been cleared / never existed. Minimal HTML
+/// with a back link (the page must still be a valid document, not a bare 404,
+/// so the user isn't left on a blank tab).
+pub fn render_item_gone() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>video not found</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="item-page">
+  <header class="ip-topbar"><a class="ip-back" href="/">&larr; downloads</a></header>
+  <div class="ip-gone">this video is no longer in the queue</div>
+</div>
+</body>
+</html>"#.to_string()
+}
 #[derive(Template)]
 #[template(path = "log_lines.html")]
 struct LogLines<'a> {
@@ -529,17 +575,6 @@ struct Ack<'a> {
 
 pub fn render_ack(msg: &str, err: bool) -> String {
     Ack { msg, err }.render().unwrap_or_default()
-}
-
-// ----------------------------- logs gone ----------------------------------
-
-/// The logs pane shown when the requested item is no longer in the queue.
-#[derive(Template)]
-#[template(path = "logs_gone.html")]
-struct LogsGone;
-
-pub fn render_logs_gone() -> String {
-    LogsGone.render().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -768,9 +803,10 @@ mod card_tests {
         assert!(thumb.contains("card-badge"), "badge inside thumb");
     }
 
-    /// The done card surfaces download/open/delete overlay buttons. Buttons
-    /// are icon-labelled now (cached `<img>`s served from /static/icons), so
-    /// we assert on their `title` tooltips (which also keep the actions
+    /// The done card surfaces download/open/delete overlay buttons plus the
+    /// always-present "i" inspect link to the details page. Buttons are
+    /// icon-labelled (cached `<img>`s served from /static/icons), so we
+    /// assert on their `title` tooltips (which also keep the actions
     /// accessible) and that an `<img>` is rendered for each.
     #[test]
     fn done_card_overlay_has_actions() {
@@ -780,12 +816,14 @@ mod card_tests {
         assert!(html.contains(r#"title="download to this device"#));
         assert!(html.contains(r#"title="open/preview"#));
         assert!(html.contains(r#"title="delete from server"#));
-        // Each action button embeds an <img> icon (download/open/delete
-        // + the always-present logs button = 4 icons).
+        assert!(html.contains(r#"title="inspect video"#), "inspect link tooltip");
+        assert!(html.contains(r#"href="/item/7""#), "inspect link targets details page");
+        // Each action embeds an <img> icon (download/open/delete
+        // + the always-present inspect link = 4 icons).
         assert_eq!(
             html.matches("<img").count(),
             4,
-            "download/open/delete/logs icons"
+            "download/open/delete/inspect icons"
         );
         assert!(
             html.contains(r#"src="/static/icons/download.svg"#),
@@ -800,8 +838,8 @@ mod card_tests {
             "delete icon url"
         );
         assert!(
-            html.contains(r#"src="/static/icons/logs.svg"#),
-            "logs icon url"
+            html.contains(r#"src="/static/icons/info.svg"#),
+            "inspect icon url"
         );
     }
 
@@ -831,19 +869,21 @@ mod card_tests {
         );
     }
 
-    /// Pending card surfaces a cancel button (not delete/open/download).
+    /// Pending card surfaces a cancel button (not delete/open/download) plus
+    /// the always-present inspect link.
     #[test]
     fn pending_card_overlay_has_cancel() {
         let html = render_card(&item(ItemStatus::Pending, None));
         assert!(html.contains(r#"title="cancel download"#));
-        assert_eq!(html.matches("<img").count(), 2, "cancel + logs icons");
+        assert!(html.contains(r#"title="inspect video"#), "inspect link tooltip");
+        assert_eq!(html.matches("<img").count(), 2, "cancel + inspect icons");
         assert!(
             html.contains(r#"src="/static/icons/stop.svg"#),
             "cancel icon url"
         );
         assert!(
-            html.contains(r#"src="/static/icons/logs.svg"#),
-            "logs icon url"
+            html.contains(r#"src="/static/icons/info.svg"#),
+            "inspect icon url"
         );
         // No done-state actions on a pending card.
         assert!(!html.contains(r#"title="download to this device"#));
@@ -868,5 +908,88 @@ mod card_tests {
         assert!(active.contains("/thumb/t.jpg"), "thumbnail present");
         assert!(active.contains("2 queued"));
         assert!(active.contains("Hello World"), "title present");
+    }
+}
+
+#[cfg(test)]
+mod item_page_tests {
+    use super::*;
+    use crate::state::{ItemStatus, QueueItem};
+
+    fn item(status: ItemStatus) -> QueueItem {
+        let mut it = QueueItem::new(42, "https://example/watch?v=x".into());
+        it.title = Some("Hello World".into());
+        it.duration = Some(123.0);
+        it.status = status;
+        it.thumbnail = Some("thumb-abc.jpg".into());
+        it
+    }
+
+    /// A finished video's details page is a full standalone document: it
+    /// loads htmx + the stylesheet, shows the full thumbnail, surfaces the
+    /// View / Download / Delete big text buttons with percent-encoded file
+    /// links, lists the metadata, and includes the (non-polling) log body.
+    #[test]
+    fn done_item_page_has_full_doc_and_actions() {
+        let mut it = item(ItemStatus::Done);
+        it.filename = Some("Video #1.webm".into());
+        it.logs.push("[download] 100%".into());
+        let html = render_item_page(&it);
+
+        assert!(html.starts_with("<!DOCTYPE html>"), "full document");
+        assert!(html.contains(r#"href="/static/app.css""#), "stylesheet");
+        assert!(html.contains(r#"<script src="/static/htmx.min.js">"#), "htmx");
+        assert!(html.contains(r#"<a class="ip-back" href="/">"#), "back link");
+        // Full thumbnail uses the cached thumbnail route.
+        assert!(html.contains(r#"<img src="/thumb/thumb-abc.jpg""#));
+        // Big text buttons for a finished file, with percent-encoded links.
+        assert!(html.contains(r#"class="big-btn view"#));
+        assert!(html.contains(r#"href="/file/Video%20%231.webm?inline=1"#));
+        assert!(html.contains(r#"class="big-btn download"#));
+        assert!(html.contains(r#"href="/file/Video%20%231.webm?download=1"#));
+        assert!(html.contains(r#"class="big-btn delete"#));
+        assert!(html.contains(r#"hx-post="/delete-item/42""#));
+        // Metadata + log body present.
+        assert!(html.contains("Hello World"), "title");
+        assert!(html.contains("https://example/watch?v=x"), "url");
+        assert!(html.contains("Video #1.webm"), "filename");
+        assert!(html.contains(r#"id="item-log-lines"#), "log body");
+        assert!(html.contains("[download] 100%"), "log line");
+        // Done items don't poll (no more output expected).
+        assert!(!html.contains("hx-trigger=\"every 2s\""), "no polling when done");
+    }
+
+    /// An in-flight item's page shows Cancel (not View/Download/Delete) and
+    /// wires the log body to poll /logs/:id?lines=1 every 2s.
+    #[test]
+    fn active_item_page_polls_logs_and_shows_cancel() {
+        let it = item(ItemStatus::Active);
+        let html = render_item_page(&it);
+        assert!(html.contains(r#"class="big-btn cancel"#));
+        assert!(html.contains(r#"hx-post="/cancel/42""#));
+        assert!(!html.contains(r#"class="big-btn view"#));
+        assert!(html.contains(r#"hx-get="/logs/42?lines=1""#), "poll endpoint");
+        assert!(html.contains(r#"hx-trigger="every 2s""#), "polls every 2s");
+    }
+
+    /// A failed terminal item shows Retry + Delete and the captured error.
+    #[test]
+    fn failed_item_page_shows_retry_and_error() {
+        let mut it = item(ItemStatus::Failed);
+        it.error = Some("Video unavailable".into());
+        let html = render_item_page(&it);
+        assert!(html.contains(r#"class="big-btn retry"#));
+        assert!(html.contains(r#"class="big-btn delete"#));
+        assert!(html.contains("Video unavailable"), "error surfaced");
+        assert!(!html.contains(r#"class="big-btn view"#));
+    }
+
+    /// The "gone" page is a valid document with a back link (not a bare 404).
+    #[test]
+    fn gone_page_is_a_valid_document() {
+        let html = render_item_gone();
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains(r#"<a class="ip-back" href="/">"#));
+        assert!(html.contains("no longer in the queue"));
     }
 }

@@ -24,7 +24,7 @@
     </div>
   </header>
 
-  <!-- Main: downloads (cards) + per-video logs. -->
+  <!-- Main: downloads (cards). Per-video details live on the /item/:id page. -->
   <div class="main">
     <main class="pane pane-cards">
       <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
@@ -32,10 +32,6 @@
         <div class="cards-list"><div class="empty">connecting&hellip;</div></div>
       </div>
     </main>
-
-    <aside class="pane pane-logs" id="logs-pane">
-      <div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>
-    </aside>
   </div>
 
 </div>
@@ -51,27 +47,6 @@
 <script>
   // Global SSE connection (htmx sse extension picks this up at body level).
   document.body.setAttribute('sse-connect', '/events');
-
-  // Close the logs pane (called by the pane's own "close" button).
-  window.closeLogs = function () {
-    var pane = document.getElementById('logs-pane');
-    pane.innerHTML = '<div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>';
-  };
-
-  // Auto-stick the logs pane to the bottom while a download is in flight,
-  // unless the user has scrolled up to read earlier output. The scroll
-  // container (#lp-body) is never swapped by the poll, so its scrollTop
-  // survives; we only nudge it after a line-swap when stuck.
-  (function () {
-    document.body.addEventListener('htmx:afterSwap', function (e) {
-      var target = e.detail && e.detail.target;
-      if (!target || target.id !== 'lp-lines') return;
-      var body = document.getElementById('lp-body');
-      if (!body) return;
-      var stuck = body.scrollHeight - body.scrollTop - body.clientHeight > 60;
-      if (!stuck) body.scrollTop = body.scrollHeight;
-    });
-  })();
 
   // Transient ack toast: POST actions (cancel/retry/clear/delete) swap a
   // short confirmation into #ack; auto-clear it after a few seconds so it

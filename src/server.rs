@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/thumb/{name}", axum::routing::get(get_thumb))
         .route("/delete/{name}", axum::routing::post(library::delete_file))
         .route("/logs/{id}", axum::routing::get(get_logs))
+        .route("/item/{id}", axum::routing::get(get_item_page))
         .route("/delete-item/{id}", axum::routing::post(post_delete_item))
         .route("/events", axum::routing::get(get_events))
         .with_state(state)
@@ -60,6 +61,7 @@ const ICONS: &[(&str, &str)] = &[
     ("logs.svg", include_str!("../static/logs.svg")),
     ("stop.svg", include_str!("../static/stop.svg")),
     ("retry.svg", include_str!("../static/retry.svg")),
+    ("info.svg", include_str!("../static/info.svg")),
 ];
 
 async fn index(State(_state): State<Arc<AppState>>) -> Response {
@@ -453,30 +455,45 @@ async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>)
 
 // ------------------------------ /logs/:id ---------------------------------
 
-/// Query params for /logs/:id.
-#[derive(Deserialize, Default)]
-struct LogsQuery {
-    /// When present, return only the inner log-line divs (the body of
-    /// `#lp-lines`) -- used by the pane's self-poll so the scroll container
-    /// itself is never swapped (preserving scroll position).
-    pub lines: Option<String>,
-}
-
-/// GET /logs/:id -- render the per-video logs pane for `id`. Without
-/// `?lines=1` returns the full pane (header + scroll body); with `?lines=1`
-/// returns just the inner log-line divs for the pane's self-poll. Returns a
-/// minimal "not found" pane when the item is gone (e.g. cleared mid-view).
+/// GET /logs/:id -- render the inner log-line divs for `id` (the body of
+/// `#item-log-lines` on the details page, polled every 2s while the item is
+/// in flight). Returns an empty `(no output yet)` body when the item has
+/// been cleared from the queue, so the poll degrades gracefully instead of
+/// swapping in a full-page fragment.
 async fn get_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u64>,
-    Query(q): Query<LogsQuery>,
 ) -> String {
     let item = state.queue.lock().await.get(id).cloned();
     match item {
-        Some(item) if q.lines.is_some() => render::render_log_lines(&item.logs),
-        Some(item) => render::render_logs_pane(&item),
-        None => render::render_logs_gone(),
+        Some(item) => render::render_log_lines(&item.logs),
+        None => render::render_log_lines(&[]),
     }
+}
+
+// ------------------------------ /item/:id ---------------------------------
+
+/// GET /item/:id -- the full standalone details page for one video:
+/// full thumbnail + metadata + big View/Download/Delete action buttons +
+/// the complete yt-dlp log output. Returns a `text/html` document (the page
+/// loads htmx itself for log polling + the action buttons). When the item is
+/// no longer in the queue (cleared / never existed), serves a minimal
+/// "gone" page with a back link instead of a bare 404.
+async fn get_item_page(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u64>,
+) -> Response {
+    let item = state.queue.lock().await.get(id).cloned();
+    let body = match item {
+        Some(item) => render::render_item_page(&item),
+        None => render::render_item_gone(),
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    (StatusCode::OK, headers, body).into_response()
 }
 
 // ------------------------------ /delete-item/:id --------------------------
