@@ -314,31 +314,60 @@ fn render_card(item: &QueueItem) -> String {
     )
 }
 
+/// An overlay-button icon: a cached `<img>` served from `/static/icons`, so
+/// the SVG markup is fetched once per icon and reused across every card
+/// instead of being inlined into each card's HTML. Sizing is handled by
+/// `.ov-btn img` in app.css; the explicit `width`/`height` guard against
+/// layout shift before the (tiny) image loads. `alt` is empty because the
+/// surrounding button already exposes its action via `title`.
+fn icon(name: &str) -> &'static str {
+    match name {
+        "download" => r#"<img class="ov-icon" src="/static/icons/download.svg" alt="" width="16" height="16" loading="lazy">"#,
+        "open" => r#"<img class="ov-icon" src="/static/icons/play.svg" alt="" width="16" height="16" loading="lazy">"#,
+        "delete" => r#"<img class="ov-icon" src="/static/icons/trash.svg" alt="" width="16" height="16" loading="lazy">"#,
+        "logs" => r#"<img class="ov-icon" src="/static/icons/logs.svg" alt="" width="16" height="16" loading="lazy">"#,
+        "cancel" => r#"<img class="ov-icon" src="/static/icons/stop.svg" alt="" width="16" height="16" loading="lazy">"#,
+        "retry" => r#"<img class="ov-icon" src="/static/icons/retry.svg" alt="" width="16" height="16" loading="lazy">"#,
+        _ => "",
+    }
+}
+
 /// Render the top-right thumbnail overlay buttons, context-aware by status.
+/// Each button shows a coloured icon served from `/static/icons/{name}` (a
+/// single cached request reused across every card, rather than inlining the
+/// SVG markup per card). The icon's `title` tooltip spells out the action in
+/// words for accessibility; the icons carry the semantic colour, so the
+/// buttons use a neutral border rather than per-action coloured borders.
 fn render_card_overlay(item: &QueueItem) -> String {
     let id = item.id;
     let logs_btn = format!(
-        r##"<button class="ov-btn" hx-get="/logs/{id}" hx-target="#logs-pane" hx-swap="innerHTML" title="show yt-dlp logs">logs</button>"##,
-        id = id
+        r##"<button class="ov-btn" hx-get="/logs/{id}" hx-target="#logs-pane" hx-swap="innerHTML" title="show yt-dlp logs">{icon}</button>"##,
+        id = id,
+        icon = icon("logs"),
     );
     let actions: String = match item.status {
         ItemStatus::Pending | ItemStatus::Active => format!(
-            r##"<button class="ov-btn ov-warn" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML">cancel</button>"##,
-            id = id
+            r##"<button class="ov-btn" hx-post="/cancel/{id}" hx-target="#ack" hx-swap="innerHTML" title="cancel download">{icon}</button>"##,
+            id = id,
+            icon = icon("cancel"),
         ),
         ItemStatus::Failed | ItemStatus::Cancelled => format!(
-            r##"<button class="ov-btn ov-ok" hx-post="/retry/{id}" hx-target="#ack" hx-swap="innerHTML">retry</button>"##,
-            id = id
+            r##"<button class="ov-btn" hx-post="/retry/{id}" hx-target="#ack" hx-swap="innerHTML" title="retry download">{icon}</button>"##,
+            id = id,
+            icon = icon("retry"),
         ),
         ItemStatus::Done => match &item.filename {
             Some(name) => {
                 let n = url_encode_path(name);
                 let disp = esc(name);
                 format!(
-                    r##"<a class="ov-btn" href="/file/{n}?download=1" title="download to this device">download</a><a class="ov-btn" href="/file/{n}?inline=1" target="_blank" rel="noopener" title="open/preview">open</a><button class="ov-btn ov-warn" hx-post="/delete-item/{id}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {disp} from the server?">delete</button>"##,
+                    r##"<a class="ov-btn" href="/file/{n}?download=1" title="download to this device">{dl}</a><a class="ov-btn" href="/file/{n}?inline=1" target="_blank" rel="noopener" title="open/preview">{op}</a><button class="ov-btn" hx-post="/delete-item/{id}" hx-target="#ack" hx-swap="innerHTML" hx-confirm="Delete {disp} from the server?" title="delete from server">{del}</button>"##,
                     n = n,
                     disp = disp,
-                    id = id
+                    id = id,
+                    dl = icon("download"),
+                    op = icon("open"),
+                    del = icon("delete"),
                 )
             }
             None => String::new(),
@@ -784,15 +813,25 @@ mod card_tests {
         assert!(thumb.contains("card-badge"), "badge inside thumb");
     }
 
-    /// The done card surfaces download/open/delete overlay buttons.
+    /// The done card surfaces download/open/delete overlay buttons. Buttons
+    /// are icon-labelled now (cached `<img>`s served from /static/icons), so
+    /// we assert on their `title` tooltips (which also keep the actions
+    /// accessible) and that an `<img>` is rendered for each.
     #[test]
     fn done_card_overlay_has_actions() {
         let mut it = item(ItemStatus::Done, None);
         it.filename = Some("video.webm".into());
         let html = render_card(&it);
-        assert!(html.contains(">download<"));
-        assert!(html.contains(">open<"));
-        assert!(html.contains(">delete<"));
+        assert!(html.contains(r#"title="download to this device"#));
+        assert!(html.contains(r#"title="open/preview"#));
+        assert!(html.contains(r#"title="delete from server"#));
+        // Each action button embeds an <img> icon (download/open/delete
+        // + the always-present logs button = 4 icons).
+        assert_eq!(html.matches("<img").count(), 4, "download/open/delete/logs icons");
+        assert!(html.contains(r#"src="/static/icons/download.svg"#), "download icon url");
+        assert!(html.contains(r#"src="/static/icons/play.svg"#), "open icon url");
+        assert!(html.contains(r#"src="/static/icons/trash.svg"#), "delete icon url");
+        assert!(html.contains(r#"src="/static/icons/logs.svg"#), "logs icon url");
     }
 
     /// Filenames with URL-special chars (spaces, `#`, `?`, `&`, parens) must
@@ -818,8 +857,12 @@ mod card_tests {
     #[test]
     fn pending_card_overlay_has_cancel() {
         let html = render_card(&item(ItemStatus::Pending, None));
-        assert!(html.contains(">cancel<"));
-        assert!(!html.contains(">download<"));
+        assert!(html.contains(r#"title="cancel download"#));
+        assert_eq!(html.matches("<img").count(), 2, "cancel + logs icons");
+        assert!(html.contains(r#"src="/static/icons/stop.svg"#), "cancel icon url");
+        assert!(html.contains(r#"src="/static/icons/logs.svg"#), "logs icon url");
+        // No done-state actions on a pending card.
+        assert!(!html.contains(r#"title="download to this device"#));
     }
 
     /// render_status idle banner is hidden; queued banner shows the count;
@@ -843,4 +886,3 @@ mod card_tests {
         assert!(active.contains("Hello World"), "title present");
     }
 }
-

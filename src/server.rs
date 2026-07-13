@@ -24,6 +24,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/static/htmx.min.js", axum::routing::get(static_htmx))
         .route("/static/htmx-ext-sse.js", axum::routing::get(static_sse))
         .route("/static/app.css", axum::routing::get(static_css))
+        .route("/static/icons/{name}", axum::routing::get(static_icon))
         .route("/download", axum::routing::post(post_download))
         .route("/probe", axum::routing::get(get_probe))
         .route("/header", axum::routing::get(get_header))
@@ -47,6 +48,19 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
 const HTMX_SSE_JS: &[u8] = include_bytes!("../static/htmx-ext-sse.js");
 const APP_CSS: &str = include_str!("../static/app.css");
+
+/// Overlay-button icons, embedded at compile time and served one each from
+/// `/static/icons/{name}` so a card references them by URL instead of
+/// inlining the full SVG markup on every card (which duplicated the bytes
+/// once per video). Keyed by filename including the `.svg` suffix.
+const ICONS: &[(&str, &str)] = &[
+    ("download.svg", include_str!("../static/download.svg")),
+    ("play.svg", include_str!("../static/play.svg")),
+    ("trash.svg", include_str!("../static/trash.svg")),
+    ("logs.svg", include_str!("../static/logs.svg")),
+    ("stop.svg", include_str!("../static/stop.svg")),
+    ("retry.svg", include_str!("../static/retry.svg")),
+];
 
 async fn index(State(_state): State<Arc<AppState>>) -> Response {
     // Static page; all dynamic state arrives via SSE.
@@ -73,6 +87,27 @@ async fn static_css() -> Response {
         HeaderValue::from_static("text/css; charset=utf-8"),
     );
     (StatusCode::OK, headers, APP_CSS).into_response()
+}
+
+/// GET /static/icons/:name -- serve one of the compile-time-embedded overlay
+/// icon SVGs (see `ICONS`). Cacheable for a day; returns 404 for unknown
+/// names so the route can't be abused to probe the filesystem.
+async fn static_icon(Path(name): Path<String>) -> Response {
+    match ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b) {
+        Some(body) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("image/svg+xml"),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=86400"),
+            );
+            (StatusCode::OK, headers, body).into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 fn bytes_response(data: &'static [u8], content_type: &str) -> Response {

@@ -225,22 +225,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .card-overlay {
   position: absolute; top: 8px; right: 8px;
   display: flex; gap: 4px; flex-direction: row; flex-wrap: wrap-reverse;
-  justify-content: flex-end;
+  align-items: center; justify-content: flex-end;
   opacity: 0; transition: opacity 0.12s;
 }
 .card:hover .card-overlay,
 .card.active .card-overlay { opacity: 1; }
 .ov-btn {
-  font-size: 12px; padding: 3px 9px; border-radius: 4px;
+  font-size: 16px; line-height: 1; height: 30px; min-width: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 7px; border-radius: 4px;
   background: rgba(20,22,26,0.85); color: var(--fg);
-  border: 1px solid var(--line); cursor: pointer; display: inline-block;
-  backdrop-filter: blur(2px); text-decoration: none;
+  border: 1px solid var(--line); cursor: pointer; text-decoration: none;
+  backdrop-filter: blur(2px);
 }
+.ov-btn img { width: 16px; height: 16px; display: block; pointer-events: none; }
 .ov-btn:hover { background: rgba(40,46,58,0.95); text-decoration: none; }
-.ov-btn.ov-warn { border-color: #5c3434; }
-.ov-btn.ov-warn:hover { background: #3a2226; }
-.ov-btn.ov-ok { border-color: #345034; }
-.ov-btn.ov-ok:hover { background: #243324; }
 
 /* progress lives in the floating bottom banner, not on the card. */
 
