@@ -79,9 +79,12 @@ directory, using fresh cookies from the local Firefox profile by default.
 | Frontend     | htmx core + `htmx-ext-sse` (vendored, embedded)     |
 
 The index page is small and fixed, so a template engine is overkill. We embed
-`index.html`, `htmx.min.js`, `htmx-ext-sse.js`, and a small `app.css` directly
-into the binary with `include_bytes!`/`include_str!` and serve them from `/static/*`
-and `/`.
+`index.html`, `app.css`, and the vendored htmx assets
+(`static/vendored/htmx.org-2.0.4.js`, `static/vendored/htmx-ext-sse-2.2.4.js`)
+directly into the binary with `include_bytes!`/`include_str!` and serve them
+from `/static/*` and `/`. The htmx files are kept non-minified so they can
+be read and debugged clearly in the browser; versions are pinned in the
+filenames (which also serves as a cache buster on upgrade).
 
 ### Why async at all
 
@@ -731,11 +734,12 @@ yt-downloader-webui/
 +-- static/               // embedded at build time
     +-- index.html
     +-- app.css
-    +-- htmx.min.js        // vendored, pinned version
-    +-- htmx-ext-sse.js    // vendored, pinned version
+    +-- vendored/
+        +-- htmx.org-2.0.4.js      // vendored, non-minified, version pinned
+        +-- htmx-ext-sse-2.2.4.js  // vendored, non-minified, version pinned
 ```
 
-`include_bytes!("static/htmx.min.js")` etc. keep everything inside the binary.
+`include_bytes!("static/vendored/htmx.org-2.0.4.js")` etc. keep everything inside the binary.
 Vendored htmx files are committed to the repo (pinned, with a `VERSION` note).
 
 ---

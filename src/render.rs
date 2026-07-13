@@ -962,7 +962,7 @@ mod item_page_tests {
         assert!(html.starts_with("<!DOCTYPE html>"), "full document");
         assert!(html.contains(r#"href="/static/app.css""#), "stylesheet");
         assert!(
-            html.contains(r#"<script src="/static/htmx.min.js">"#),
+            html.contains(r#"<script src="/static/htmx.org-2.0.4.js">"#),
             "htmx"
         );
         assert!(

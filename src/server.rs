@@ -21,8 +21,8 @@ use crate::worker;
 pub fn router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(index))
-        .route("/static/htmx.min.js", axum::routing::get(static_htmx))
-        .route("/static/htmx-ext-sse.js", axum::routing::get(static_sse))
+        .route("/static/htmx.org-2.0.4.js", axum::routing::get(static_htmx))
+        .route("/static/htmx-ext-sse-2.2.4.js", axum::routing::get(static_sse))
         .route("/static/app.css", axum::routing::get(static_css))
         .route("/static/icons/{name}", axum::routing::get(static_icon))
         .route("/download", axum::routing::post(post_download))
@@ -46,8 +46,13 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 // ------------------------------ static -------------------------------------
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
-const HTMX_JS: &[u8] = include_bytes!("../static/htmx.min.js");
-const HTMX_SSE_JS: &[u8] = include_bytes!("../static/htmx-ext-sse.js");
+// Vendored third-party JS (non-minified so it's readable / debuggable in the
+// browser). Versions are pinned in the filenames so upgrading htmx also busts
+// any browser cache. Sources:
+//   htmx.org-2.0.4.js      <- https://unpkg.com/htmx.org@2.0.4/dist/htmx.js
+//   htmx-ext-sse-2.2.4.js  <- https://unpkg.com/htmx-ext-sse@2.2.4/dist/sse.js
+const HTMX_JS: &[u8] = include_bytes!("../static/vendored/htmx.org-2.0.4.js");
+const HTMX_SSE_JS: &[u8] = include_bytes!("../static/vendored/htmx-ext-sse-2.2.4.js");
 const APP_CSS: &str = include_str!("../static/app.css");
 
 /// Overlay-button icons, embedded at compile time and served one each from
