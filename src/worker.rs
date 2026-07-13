@@ -725,9 +725,25 @@ pub fn probe_stream(
         tokio::pin!(deadline);
         let mut timed_out = false;
 
+        // Watch the global shutdown token too: axum's graceful shutdown waits
+        // for in-flight response streams to complete, and this loop otherwise
+        // only ends on the 60s deadline or yt-dlp EOF. Without this branch a
+        // probe running at Ctrl+C time would block server shutdown for up to
+        // PROBE_TIMEOUT -- looking like "Ctrl+C doesn't stop the server".
+        let shutdown = state.shutdown.cancelled();
+        tokio::pin!(shutdown);
+
         loop {
             tokio::select! {
                 biased;
+                _ = &mut shutdown => {
+                    // Server is shutting down: kill the probe child (also
+                    // kill_on_drop, but do it explicitly so the exit is
+                    // logged as clean) and end the stream without a result --
+                    // the client is going away with the server anyway.
+                    let _ = child.kill().await;
+                    return;
+                }
                 _ = &mut deadline => {
                     timed_out = true;
                     break;
