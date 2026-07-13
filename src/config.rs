@@ -1,8 +1,7 @@
 //! CLI parsing + resolved `Config`.
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::fs;
-
 
 /// `web-dl` -- a single-binary web wrapper around `yt-dlp`.
 #[derive(Parser, Debug)]
@@ -14,7 +13,12 @@ pub struct Cli {
 
     /// Browser to pull cookies from via --cookies-from-browser. Default: firefox.
     /// Use "none" to disable cookies entirely.
-    #[arg(short = 'b', long = "cookies-from-browser", value_name = "BROWSER", default_value = "firefox")]
+    #[arg(
+        short = 'b',
+        long = "cookies-from-browser",
+        value_name = "BROWSER",
+        default_value = "firefox"
+    )]
     pub cookies_from_browser: String,
 
     /// Path to yt-dlp binary. Default: yt-dlp (PATH).
@@ -92,7 +96,11 @@ impl Cli {
 
         let state_dir = match self.state_dir {
             Some(s) => expand_tilde(&s, &home),
-            None => home.join(".local").join("share").join("web-dl").join("queue"),
+            None => home
+                .join(".local")
+                .join("share")
+                .join("web-dl")
+                .join("queue"),
         };
         fs::create_dir_all(&state_dir)
             .with_context(|| format!("failed to create state dir: {}", state_dir.display()))?;

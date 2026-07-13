@@ -106,13 +106,13 @@ fn parse_progress(obj: &serde_json::Map<String, Value>) -> Progress {
     let get_str = |k: &str| obj.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
     let get_num = |k: &str| {
         obj.get(k).and_then(|v| {
-            v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
         })
     };
     let get_uint = |k: &str| {
-        obj.get(k).and_then(|v| {
-            v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))
-        })
+        obj.get(k)
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
     };
 
     Progress {
@@ -146,9 +146,8 @@ fn parse_flat_entry(obj: &serde_json::Map<String, Value>) -> FlatEntry {
         })
     };
     let get_uint = |k: &str| {
-        obj.get(k).and_then(|v| {
-            v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))
-        })
+        obj.get(k)
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
     };
 
     FlatEntry {
@@ -188,7 +187,9 @@ fn best_thumbnail(obj: &serde_json::Map<String, Value>) -> Option<String> {
             return best.map(|(_, u)| u);
         }
     }
-    obj.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string())
+    obj.get("thumbnail")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -355,5 +356,4 @@ mod tests {
         let e = parse_flat_line(line).expect("should parse");
         assert!(!e.is_playlist_entry()); // url is None
     }
-
 }

@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use time::format_description::well_known::Rfc3339 as Rfc3339Fmt;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339 as Rfc3339Fmt;
 use tokio::io::AsyncWriteExt;
 
 use crate::state::{ItemStatus, Queue, QueueItem};
@@ -58,8 +58,7 @@ pub async fn load(dir: &Path, cache_dir: &Path) -> Result<Queue> {
     let mut rd = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) => {
-            return Err(e)
-                .with_context(|| format!("reading state dir {}", dir.display()));
+            return Err(e).with_context(|| format!("reading state dir {}", dir.display()));
         }
     };
 
@@ -89,11 +88,7 @@ pub async fn load(dir: &Path, cache_dir: &Path) -> Result<Queue> {
     }
 
     // FIFO by enqueue time; id breaks ties (and survives same-second enqueues).
-    items.sort_by(|a, b| {
-        a.enqueued_at
-            .cmp(&b.enqueued_at)
-            .then(a.id.cmp(&b.id))
-    });
+    items.sort_by(|a, b| a.enqueued_at.cmp(&b.enqueued_at).then(a.id.cmp(&b.id)));
 
     let max_id = items.iter().map(|i| i.id).max().unwrap_or(0);
     let mut queue = Queue::new();
@@ -140,9 +135,8 @@ async fn load_one(path: &Path, cache_dir: &Path) -> Result<QueueItem> {
         other => bail!("unknown item status {other:?}"),
     };
 
-    let enqueued_at =
-        OffsetDateTime::parse(&s.enqueued_at, &Rfc3339Fmt)
-            .unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let enqueued_at = OffsetDateTime::parse(&s.enqueued_at, &Rfc3339Fmt)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc());
 
     // Self-heal: if the persisted thumbnail file is gone from the cache dir,
     // treat it as absent (the cache is safe to clear; the thumb is re-fetched
@@ -178,10 +172,7 @@ pub async fn save(dir: &Path, _next_id: u64, items: &[QueueItem]) -> Result<()> 
 
     // Map existing file id -> path, and the set of taken filename timestamps.
     let existing = scan_existing(dir).await;
-    let mut taken_ts: HashSet<i64> = existing
-        .values()
-        .filter_map(|p| filename_ts(p))
-        .collect();
+    let mut taken_ts: HashSet<i64> = existing.values().filter_map(|p| filename_ts(p)).collect();
 
     let live_ids: HashSet<u64> = items.iter().map(|i| i.id).collect();
 
@@ -204,8 +195,13 @@ pub async fn save(dir: &Path, _next_id: u64, items: &[QueueItem]) -> Result<()> 
 
     // Delete orphaned files (ids no longer in the queue -- cleared / trimmed).
     for (id, path) in &existing {
-        if !live_ids.contains(id) && let Err(e) = tokio::fs::remove_file(path).await {
-            tracing::debug!("could not remove orphaned state file {}: {e}", path.display());
+        if !live_ids.contains(id)
+            && let Err(e) = tokio::fs::remove_file(path).await
+        {
+            tracing::debug!(
+                "could not remove orphaned state file {}: {e}",
+                path.display()
+            );
         }
     }
 
@@ -251,10 +247,7 @@ async fn write_item(path: &Path, item: &QueueItem) -> Result<()> {
         thumbnail: item.thumbnail.clone(),
         error: item.error.clone(),
         logs: item.logs.clone(),
-        enqueued_at: item
-            .enqueued_at
-            .format(&Rfc3339Fmt)
-            .unwrap_or_default(),
+        enqueued_at: item.enqueued_at.format(&Rfc3339Fmt).unwrap_or_default(),
     };
     let json = serde_json::to_vec_pretty(&s).context("serializing item")?;
 

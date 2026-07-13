@@ -56,7 +56,12 @@ fn hex(bytes: &[u8]) -> String {
 /// Content-Type, falling back to the URL's path extension, then `.jpg`.
 fn ext_for(content_type: Option<&str>, url: &str) -> &'static str {
     if let Some(ct) = content_type {
-        let ct = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        let ct = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         match ct.as_str() {
             "image/jpeg" | "image/jpg" => return "jpg",
             "image/png" => return "png",
@@ -84,11 +89,7 @@ fn ext_for(content_type: Option<&str>, url: &str) -> &'static str {
 /// Best-effort: errors are returned to the caller, which treats them as
 /// non-fatal (the queue simply renders without a thumbnail, and ffmpeg may
 /// generate one after the download instead).
-pub async fn fetch(
-    client: &reqwest::Client,
-    cache_dir: &Path,
-    url: &str,
-) -> Result<String> {
+pub async fn fetch(client: &reqwest::Client, cache_dir: &Path, url: &str) -> Result<String> {
     let stem = sha1_hex(url);
     // Cache hit: reuse the existing file for this URL (across known image
     // extensions) so a repeat probe skips the network.
@@ -102,10 +103,7 @@ pub async fn fetch(
         .await
         .with_context(|| format!("fetching thumbnail {url}"))?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "thumbnail {url} returned HTTP {}",
-            resp.status()
-        );
+        anyhow::bail!("thumbnail {url} returned HTTP {}", resp.status());
     }
     let content_type = resp
         .headers()
@@ -165,11 +163,7 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 /// filename (`<sha1(basename)>.jpg`). Seeks 1s in (skipping any black intro),
 /// extracts one frame, scales to fit within ~320px wide. Best-effort: errors
 /// are returned to the caller and treated as non-fatal.
-pub async fn generate(
-    ffmpeg: &str,
-    cache_dir: &Path,
-    video_path: &Path,
-) -> Result<String> {
+pub async fn generate(ffmpeg: &str, cache_dir: &Path, video_path: &Path) -> Result<String> {
     let base = video_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -186,11 +180,16 @@ pub async fn generate(
     // -q:v 3 good jpeg quality, scale to 320px wide keeping aspect.
     let mut cmd = tokio::process::Command::new(ffmpeg);
     cmd.arg("-y")
-        .arg("-ss").arg("1")
-        .arg("-i").arg(video_path)
-        .arg("-frames:v").arg("1")
-        .arg("-q:v").arg("3")
-        .arg("-vf").arg("scale=320:-2")
+        .arg("-ss")
+        .arg("1")
+        .arg("-i")
+        .arg(video_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-q:v")
+        .arg("3")
+        .arg("-vf")
+        .arg("scale=320:-2")
         .arg(&out_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -202,7 +201,12 @@ pub async fn generate(
         .with_context(|| format!("spawning ffmpeg for {}", video_path.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ffmpeg exited ({}) for {}: {}", output.status, video_path.display(), stderr.trim());
+        anyhow::bail!(
+            "ffmpeg exited ({}) for {}: {}",
+            output.status,
+            video_path.display(),
+            stderr.trim()
+        );
     }
     if !out_path.is_file() {
         anyhow::bail!(
@@ -220,7 +224,10 @@ mod tests {
     #[test]
     fn sha1_hex_matches_reference() {
         // sha1("hello") = aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
-        assert_eq!(sha1_hex("hello"), "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d");
+        assert_eq!(
+            sha1_hex("hello"),
+            "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+        );
     }
 
     #[test]
@@ -240,7 +247,10 @@ mod tests {
         // content-type with params
         assert_eq!(ext_for(Some("image/jpeg; charset=binary"), ""), "jpg");
         // unknown content-type falls back to URL extension
-        assert_eq!(ext_for(Some("application/octet-stream"), "https://x/thumb.PNG"), "png");
+        assert_eq!(
+            ext_for(Some("application/octet-stream"), "https://x/thumb.PNG"),
+            "png"
+        );
     }
 
     #[test]
@@ -254,7 +264,7 @@ mod tests {
     fn cache_hit_finds_existing_extension() {
         let dir = tempfile_dir();
         let stem = "deadbeef";
-        std::fs::write(dir.join(format!("{stem}.png"),), b"x").unwrap();
+        std::fs::write(dir.join(format!("{stem}.png")), b"x").unwrap();
         assert_eq!(cache_hit(&dir, stem), Some(format!("{stem}.png")));
         assert!(cache_hit(&dir, "missing").is_none());
         std::fs::remove_dir_all(&dir).ok();
@@ -312,12 +322,14 @@ mod tests {
         assert!(out.status.success(), "ffmpeg synth failed: {out:?}");
         assert!(video.is_file());
 
-        let name = generate("ffmpeg", &cache, &video)
-            .await
-            .expect("generate");
+        let name = generate("ffmpeg", &cache, &video).await.expect("generate");
         assert_eq!(name, format!("{}.jpg", sha1_hex("clip.mp4")));
         let thumb = cache.join(&name);
-        assert!(thumb.is_file(), "thumbnail not written at {}", thumb.display());
+        assert!(
+            thumb.is_file(),
+            "thumbnail not written at {}",
+            thumb.display()
+        );
         assert!(thumb.metadata().unwrap().len() > 0);
         // Cache hit on a second call (no ffmpeg re-run needed).
         let name2 = generate("ffmpeg", &cache, &video).await.expect("generate2");

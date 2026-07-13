@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
 /// Filter: default `info`; `-v` bumps to `web_dl=debug,info`; `RUST_LOG` is
 /// honoured when set explicitly (see DESIGN Sec. 3).
 fn init_tracing(verbose: bool) {
-    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
     let filter = if std::env::var_os("RUST_LOG").is_some() {
         EnvFilter::from_default_env()

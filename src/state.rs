@@ -100,12 +100,7 @@ impl Queue {
     /// Playlists are never persisted: their expansion happens in the request
     /// handler and is presented for approval; only the approved per-video
     /// items reach the queue (and thus the state dir).
-    pub fn enqueue(
-        &mut self,
-        url: String,
-        title: Option<String>,
-        duration: Option<f64>,
-    ) -> u64 {
+    pub fn enqueue(&mut self, url: String, title: Option<String>, duration: Option<f64>) -> u64 {
         let id = self.alloc_id();
         let mut item = QueueItem::new(id, url);
         item.title = title;
@@ -166,11 +161,7 @@ impl Queue {
             return;
         }
         // Keep all non-terminal items; trim oldest terminal ones.
-        let mut terminal_count = self
-            .items
-            .iter()
-            .filter(|i| i.status.is_terminal())
-            .count();
+        let mut terminal_count = self.items.iter().filter(|i| i.status.is_terminal()).count();
         let mut keep = Vec::with_capacity(self.items.len());
         for item in self.items.drain(..) {
             if item.status.is_terminal() && terminal_count > QUEUE_HISTORY_CAP / 2 {
@@ -266,7 +257,10 @@ pub enum ItemStatus {
 
 impl ItemStatus {
     pub fn is_terminal(self) -> bool {
-        matches!(self, ItemStatus::Done | ItemStatus::Failed | ItemStatus::Cancelled)
+        matches!(
+            self,
+            ItemStatus::Done | ItemStatus::Failed | ItemStatus::Cancelled
+        )
     }
 
     pub fn as_str(self) -> &'static str {

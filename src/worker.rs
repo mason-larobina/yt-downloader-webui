@@ -84,10 +84,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             None => return,
         };
         let url = item.url.clone();
-        let cancel = item
-            .cancel
-            .clone()
-            .unwrap_or_else(CancellationToken::new);
+        let cancel = item.cancel.clone().unwrap_or_else(CancellationToken::new);
         (
             url,
             state.cfg.cookies_from_browser.clone(),
@@ -207,7 +204,6 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         handle_line(state, item_id, &line, &mut last_status_emit).await;
     }
 
-
     // Wait for the process to exit.
     let status = match child.wait().await {
         Ok(s) => s,
@@ -279,7 +275,8 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                 let err = item.error.clone().unwrap_or_else(|| {
                     format!(
                         "yt-dlp exited{}",
-                        code.map(|c| format!(" with status {c}")).unwrap_or_default()
+                        code.map(|c| format!(" with status {c}"))
+                            .unwrap_or_default()
                     )
                 });
                 item.error = Some(err);
@@ -295,10 +292,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
 }
 
 /// Read lines from a child pipe and forward them to `tx`.
-async fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(
-    pipe: R,
-    tx: mpsc::Sender<String>,
-) {
+async fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(pipe: R, tx: mpsc::Sender<String>) {
     let mut reader = BufReader::new(pipe);
     let mut buf = Vec::with_capacity(1024);
     loop {
@@ -370,10 +364,7 @@ async fn handle_line(
     match parse_line(line) {
         ParsedLine::Progress(prog) => {
             // Capture filename from progress JSON if present.
-            let filename = prog
-                .filename
-                .clone()
-                .or_else(|| prog.tmpfilename.clone());
+            let filename = prog.filename.clone().or_else(|| prog.tmpfilename.clone());
             let status_str = prog.status.clone();
             let mut need_status = false;
             let mut need_queue = false;
@@ -383,11 +374,7 @@ async fn handle_line(
                     if let Some(f) = filename {
                         if item.filename.as_deref() != Some(&f) {
                             // Use basename only for the label.
-                            let base = f
-                                .rsplit('/')
-                                .next()
-                                .unwrap_or(&f)
-                                .to_string();
+                            let base = f.rsplit('/').next().unwrap_or(&f).to_string();
                             item.filename = Some(base);
                             need_queue = true;
                         }
@@ -794,8 +781,14 @@ mod tests {
     /// Unrelated log lines yield no filename.
     #[test]
     fn extract_dest_filename_other_lines() {
-        assert_eq!(extract_dest_filename("[youtube] aqz-KE-bpKQ: Downloading webpage"), None);
-        assert_eq!(extract_dest_filename("[info] aqz-KE-bpKQ: Downloading 1 format(s): 399+258"), None);
+        assert_eq!(
+            extract_dest_filename("[youtube] aqz-KE-bpKQ: Downloading webpage"),
+            None
+        );
+        assert_eq!(
+            extract_dest_filename("[info] aqz-KE-bpKQ: Downloading 1 format(s): 399+258"),
+            None
+        );
         assert_eq!(extract_dest_filename("ERROR: video unavailable"), None);
         assert_eq!(extract_dest_filename(""), None);
     }
