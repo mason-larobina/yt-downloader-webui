@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>web-dl</title>
+<title>downloads</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>
@@ -11,9 +11,8 @@
 <body hx-ext="sse">
 <div class="app">
 
-  <!-- Header: title + URL input (or, while probing, the streaming probe area). -->
+  <!-- Header: URL input (or, while probing, the streaming probe area). -->
   <header class="topbar">
-    <span class="title">web-dl</span>
     <div id="header-input" class="header-input">
       <form class="submit"
             hx-post="/download" hx-target="#header-input" hx-swap="innerHTML"

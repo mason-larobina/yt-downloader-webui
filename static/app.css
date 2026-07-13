@@ -181,6 +181,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .probe-actions button { font-size: 13px; padding: 6px 14px; }
 .probe-logs-toggle { color: var(--muted); }
+/* Once the probe finishes, a `.probe-form` (success) or `.probe-error` (failure)
+   is swapped into `#probe-cards`. At that point the `.probe-head` row -- the
+   flashing "probing\u2026" dot + its `cancel` button -- is stale and redundant:
+   the form carries its own Confirm / Cancel pair, and the error row has its
+   own Done button. Hide it via `:has()` so this is driven purely by the
+   swapped-in result content, not by SSE swap lifecycle events. */
+.probe-area:has(.probe-form) .probe-head,
+.probe-area:has(.probe-error) .probe-head { display: none; }
 /* On a successful probe (a .probe-form is rendered into #probe-cards) the
    streaming logs are hidden by default; the `show-logs` class (toggled by the
    "show logs" button) switches to the 2-pane grid layout above and re-reveals
