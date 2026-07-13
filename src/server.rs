@@ -61,7 +61,6 @@ const ICONS: &[(&str, &str)] = &[
     ("logs.svg", include_str!("../static/logs.svg")),
     ("stop.svg", include_str!("../static/stop.svg")),
     ("retry.svg", include_str!("../static/retry.svg")),
-    ("info.svg", include_str!("../static/info.svg")),
 ];
 
 async fn index(State(_state): State<Arc<AppState>>) -> Response {

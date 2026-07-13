@@ -789,10 +789,10 @@ mod card_tests {
         assert!(thumb.contains("card-badge"), "badge inside thumb");
     }
 
-    /// The done card surfaces download/open/delete overlay buttons plus the
-    /// always-present "i" inspect link to the details page. Buttons are
-    /// icon-labelled (cached `<img>`s served from /static/icons), so we
-    /// assert on their `title` tooltips (which also keep the actions
+    /// The done card surfaces download/open/delete overlay buttons. The whole
+    /// card is a stretched link to the details page (no separate "i" button).
+    /// Buttons are icon-labelled (cached `<img>`s served from /static/icons),
+    /// so we assert on their `title` tooltips (which also keep the actions
     /// accessible) and that an `<img>` is rendered for each.
     #[test]
     fn done_card_overlay_has_actions() {
@@ -802,20 +802,21 @@ mod card_tests {
         assert!(html.contains(r#"title="download to this device"#));
         assert!(html.contains(r#"title="open/preview"#));
         assert!(html.contains(r#"title="delete from server"#));
+        // The card itself is a stretched link to the details page (the old
+        // per-card "i" inspect button is gone).
         assert!(
-            html.contains(r#"title="inspect video"#),
-            "inspect link tooltip"
+            html.contains(r#"class="card-link" href="/item/7""#),
+            "stretched link targets details page"
         );
         assert!(
-            html.contains(r#"href="/item/7""#),
-            "inspect link targets details page"
+            !html.contains("/static/icons/info.svg"),
+            "no inspect icon anymore"
         );
-        // Each action embeds an <img> icon (download/open/delete
-        // + the always-present inspect link = 4 icons).
+        // Each action embeds an <img> icon (download/open/delete = 3 icons).
         assert_eq!(
             html.matches("<img").count(),
-            4,
-            "download/open/delete/inspect icons"
+            3,
+            "download/open/delete icons"
         );
         assert!(
             html.contains(r#"src="/static/icons/download.svg"#),
@@ -828,10 +829,6 @@ mod card_tests {
         assert!(
             html.contains(r#"src="/static/icons/trash.svg"#),
             "delete icon url"
-        );
-        assert!(
-            html.contains(r#"src="/static/icons/info.svg"#),
-            "inspect icon url"
         );
     }
 
@@ -861,27 +858,58 @@ mod card_tests {
         );
     }
 
-    /// Pending card surfaces a cancel button (not delete/open/download) plus
-    /// the always-present inspect link.
+    /// Pending card surfaces a cancel button (not delete/open/download). The
+    /// whole card is a stretched link to the details page.
     #[test]
     fn pending_card_overlay_has_cancel() {
         let html = render_card(&item(ItemStatus::Pending, None));
         assert!(html.contains(r#"title="cancel download"#));
         assert!(
-            html.contains(r#"title="inspect video"#),
-            "inspect link tooltip"
+            html.contains(r#"class="card-link" href="/item/7""#),
+            "stretched link targets details page"
         );
-        assert_eq!(html.matches("<img").count(), 2, "cancel + inspect icons");
+        assert!(!html.contains("/static/icons/info.svg"), "no inspect icon");
+        assert_eq!(html.matches("<img").count(), 1, "cancel icon only");
         assert!(
             html.contains(r#"src="/static/icons/stop.svg"#),
             "cancel icon url"
         );
-        assert!(
-            html.contains(r#"src="/static/icons/info.svg"#),
-            "inspect icon url"
-        );
         // No done-state actions on a pending card.
         assert!(!html.contains(r#"title="download to this device"#));
+    }
+
+    /// A failed (or cancelled) card surfaces a retry button *and* a trash
+    /// button that removes the item from the download history (POST
+    /// /delete-item/:id -- the item is terminal, so the state file is dropped
+    /// on the next persist). No file is touched (there is none).
+    #[test]
+    fn failed_card_overlay_has_retry_and_trash() {
+        let mut it = item(ItemStatus::Failed, None);
+        it.error = Some("Video unavailable".into());
+        let html = render_card(&it);
+        assert!(html.contains(r#"title="retry download"#));
+        assert!(
+            html.contains(r#"title="remove from history"#),
+            "trash tooltip"
+        );
+        assert!(
+            html.contains(r#"hx-post="/delete-item/7""#),
+            "trash posts to delete-item"
+        );
+        // No confirm dialog for a history-only removal (no file to lose).
+        assert!(
+            !html.contains("hx-confirm"),
+            "no confirm for history removal"
+        );
+        assert!(!html.contains(r#"title="delete from server"#));
+        // retry + trash icons.
+        assert_eq!(html.matches("<img").count(), 2, "retry + trash icons");
+        assert!(html.contains(r#"src="/static/icons/retry.svg"#));
+        assert!(html.contains(r#"src="/static/icons/trash.svg"#));
+        // The captured error surfaces on the card.
+        assert!(html.contains("Video unavailable"));
+        // Card is still a stretched link to the details page.
+        assert!(html.contains(r#"class="card-link" href="/item/7""#));
     }
 
     /// render_status idle banner is hidden; queued banner shows the count;

@@ -280,12 +280,19 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* ---------- card ---------- */
 .card {
   background: var(--bg-2); border: 2px solid var(--line-2); border-radius: var(--radius);
-  overflow: hidden; display: flex; flex-direction: column;
+  overflow: hidden; display: flex; flex-direction: column; position: relative; cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
   box-shadow: var(--shadow-sm);
 }
 .card:hover { box-shadow: var(--shadow-md); }
 .card:active { transform: translateY(1px); }
+/* Stretched link makes the whole card a click target to the /item/:id details
+   page (replaces the old per-card "i" inspect button). It sits above the
+   static content (z-index 1); the overlay action buttons are lifted above it
+   (position: relative + z-index 2 + pointer-events gating) so the corner
+   buttons stay the things you tap. */
+.card-link { position: absolute; inset: 0; z-index: 1; color: inherit; text-decoration: none; }
+.card-link:focus-visible { outline: 2px solid var(--brand-solid); outline-offset: -4px; border-radius: calc(var(--radius) - 2px); }
 /* Status-driven border colour (bold + saturated so the state reads at a glance). */
 .card.pending   { border-color: var(--pending); }
 .card.active    { border-color: var(--active); box-shadow: 0 0 0 1px var(--active), var(--shadow-sm); }
@@ -317,17 +324,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   position: absolute; top: 8px; right: 8px;
   display: flex; gap: 5px; flex-direction: row; flex-wrap: wrap-reverse;
   align-items: center; justify-content: flex-end;
-  opacity: 0; transition: opacity 0.12s;
+  opacity: 0; transition: opacity 0.12s; pointer-events: none;
 }
 .card:hover .card-overlay,
-.card.active .card-overlay { opacity: 1; }
+.card.active .card-overlay { opacity: 1; pointer-events: auto; }
 .ov-btn {
   font-size: 16px; line-height: 1; height: 32px; min-width: 32px;
   display: inline-flex; align-items: center; justify-content: center;
   padding: 0 8px; border-radius: 7px;
   background: rgba(20,22,28,0.92); color: var(--fg);
   border: 1px solid var(--line-2); cursor: pointer; text-decoration: none;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm); position: relative; z-index: 2;
 }
 .ov-btn img { width: 16px; height: 16px; display: block; pointer-events: none; }
 .ov-btn:hover { background: #1c2029; border-color: var(--brand-solid); text-decoration: none; }
