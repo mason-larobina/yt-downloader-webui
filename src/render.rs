@@ -9,14 +9,17 @@ use crate::state::{ItemStatus, Queue, QueueItem};
 /// /confirm can reconstruct per-video items (with titles + thumbnail URLs)
 /// without any server-side stash. The whole blob is HTML-escaped into the
 /// attribute; the browser decodes it back to this JSON on form submit.
-#[derive(serde::Serialize)]
-struct ApprovalEntry<'a> {
-    url: &'a str,
-    title: Option<&'a str>,
-    duration: Option<f64>,
+///
+/// This is the single source of truth for the render (serialize) <-> server
+/// (deserialize) round-trip contract; both sides use this one type.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApprovalEntry {
+    pub url: String,
+    pub title: Option<String>,
+    pub duration: Option<f64>,
     /// Best-thumbnail URL harvested by the probe; POST /confirm fetches it into
     /// the cache and attaches the resulting filename to the enqueued item.
-    thumbnail: Option<&'a str>,
+    pub thumbnail: Option<String>,
 }
 
 /// HTML-escape untrusted text (log lines, URLs, filenames).
@@ -243,7 +246,9 @@ impl<'a> Card<'a> {
     }
 }
 
-/// Render one video card. (Kept as a public entry point for tests.)
+/// Render one video card. Only used by tests (the live path renders the
+/// whole queue via `render_queue`), so gated to `cfg(test)`.
+#[cfg(test)]
 pub fn render_card(item: &QueueItem) -> String {
     Card::from_item(item).render().unwrap_or_default()
 }
@@ -354,23 +359,12 @@ pub fn render_item_page(item: &QueueItem) -> String {
 /// GET /item/:id when the item has been cleared / never existed. Minimal HTML
 /// with a back link (the page must still be a valid document, not a bare 404,
 /// so the user isn't left on a blank tab).
+#[derive(Template)]
+#[template(path = "item_gone.html")]
+struct ItemGone;
+
 pub fn render_item_gone() -> String {
-    r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>video not found</title>
-<link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-<div class="item-page">
-  <header class="ip-topbar"><a class="ip-back" href="/">&larr; downloads</a></header>
-  <div class="ip-gone">this video is no longer in the queue</div>
-</div>
-</body>
-</html>"#
-        .to_string()
+    ItemGone.render().unwrap_or_default()
 }
 #[derive(Template)]
 #[template(path = "log_lines.html")]
@@ -491,23 +485,23 @@ pub fn render_probe_result(
     single: Option<&FlatEntry>,
     error: Option<&str>,
 ) -> String {
-    // Build the list of (url, title, duration, thumbnail) to confirm.
-    let cards: Vec<ApprovalEntry<'_>> = if !entries.is_empty() {
+    // Build the list of ApprovalEntry to confirm.
+    let cards: Vec<ApprovalEntry> = if !entries.is_empty() {
         entries
             .iter()
             .map(|e| ApprovalEntry {
-                url: e.url.as_deref().unwrap_or(""),
-                title: e.title.as_deref(),
+                url: e.url.clone().unwrap_or_default(),
+                title: e.title.clone(),
                 duration: e.duration,
-                thumbnail: e.thumbnail.as_deref(),
+                thumbnail: e.thumbnail.clone(),
             })
             .collect()
     } else if let Some(sv) = single {
         vec![ApprovalEntry {
-            url: submitted_url,
-            title: sv.title.as_deref(),
+            url: submitted_url.to_string(),
+            title: sv.title.clone(),
             duration: sv.duration,
-            thumbnail: sv.thumbnail.as_deref(),
+            thumbnail: sv.thumbnail.clone(),
         }]
     } else {
         let msg = error
@@ -529,9 +523,9 @@ pub fn render_probe_result(
             let blob = serde_json::to_string(e).unwrap_or_default();
             ProbeCard {
                 value: blob,
-                label: e.title.unwrap_or(e.url).to_string(),
+                label: e.title.clone().unwrap_or_else(|| e.url.clone()),
                 dur: human_duration(e.duration),
-                thumb: e.thumbnail.map(str::to_string),
+                thumb: e.thumbnail.clone(),
                 idx: i + 1,
             }
         })
@@ -585,16 +579,7 @@ mod probe_result_tests {
 
     /// The checkbox `value` is an HTML-escaped JSON blob that POST /confirm
     /// must be able to deserialise back into `{url,title,duration,thumbnail}`.
-    /// This pins the contract between `render_probe_result` and
-    /// `server::ApproveEntry`.
-    #[derive(serde::Deserialize)]
-    struct ApproveEntry {
-        url: String,
-        title: Option<String>,
-        duration: Option<f64>,
-        thumbnail: Option<String>,
-    }
-
+    /// This pins the round-trip contract on the shared `ApprovalEntry` type.
     fn entry(
         url: &str,
         title: Option<&str>,
@@ -667,7 +652,7 @@ mod probe_result_tests {
         let values = checkbox_values(&html);
         assert_eq!(values.len(), 2, "expected 2 cards, got {values:?}");
 
-        let first: ApproveEntry =
+        let first: ApprovalEntry =
             serde_json::from_str(&unescape(&values[0])).expect("first value decodes");
         assert_eq!(first.url, "https://www.youtube.com/watch?v=aaa");
         assert_eq!(first.title.as_deref(), Some("First & <second> \"quoted\""));
@@ -677,7 +662,7 @@ mod probe_result_tests {
             Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg")
         );
 
-        let second: ApproveEntry =
+        let second: ApprovalEntry =
             serde_json::from_str(&unescape(&values[1])).expect("second value decodes");
         assert_eq!(second.url, "https://www.youtube.com/watch?v=bbb");
         assert!(second.title.is_none());
@@ -703,7 +688,7 @@ mod probe_result_tests {
         );
         let values = checkbox_values(&html);
         assert_eq!(values.len(), 1, "single video -> one card");
-        let e: ApproveEntry = serde_json::from_str(&unescape(&values[0])).expect("decodes");
+        let e: ApprovalEntry = serde_json::from_str(&unescape(&values[0])).expect("decodes");
         assert_eq!(e.url, "https://www.youtube.com/watch?v=aaa");
         assert_eq!(e.title.as_deref(), Some("Some Video"));
         assert_eq!(e.duration, Some(99.0));

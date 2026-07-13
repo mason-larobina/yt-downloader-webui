@@ -128,19 +128,6 @@ pub struct DownloadForm {
     pub url: String,
 }
 
-/// One decoded probe-card checkbox value (see `render::render_probe_result`).
-/// The checkbox `value` is the JSON serialisation of this; POST /confirm gets
-/// the browser-decoded JSON strings back as repeated `entry` form fields.
-#[derive(Deserialize)]
-struct ApproveEntry {
-    url: String,
-    title: Option<String>,
-    duration: Option<f64>,
-    /// Best-thumbnail URL harvested by the probe; POST /confirm fetches it
-    /// into the cache and attaches the resulting filename to the item.
-    thumbnail: Option<String>,
-}
-
 /// POST /download -- the header form's submit target. Validates that a URL
 /// was pasted and returns the probe-area shell (a fragment with its own
 /// `sse-connect="/probe?url=…"` swapped into `#header-input`). The actual
@@ -229,7 +216,7 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
     {
         let mut q = state.queue.lock().await;
         for raw in &entries {
-            match serde_json::from_str::<ApproveEntry>(raw) {
+            match serde_json::from_str::<render::ApprovalEntry>(raw) {
                 Ok(e) => {
                     let id = q.enqueue(e.url, e.title, e.duration);
                     if let Some(t) = e.thumbnail {
@@ -338,10 +325,10 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
                 Outcome::PendingRemoved
             }
             ItemStatus::Active => {
-                if let Some(item) = q.get_mut(id) {
-                    if let Some(tok) = &item.cancel {
-                        tok.cancel();
-                    }
+                if let Some(item) = q.get_mut(id)
+                    && let Some(tok) = &item.cancel
+                {
+                    tok.cancel();
                 }
                 Outcome::ActiveSignalled
             }
@@ -364,7 +351,7 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
 
 /// POST /retry/:id -- re-enqueue a cancelled/failed item at the back.
 async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
-    let result = {
+    {
         let mut q = state.queue.lock().await;
         // Reject retrying the active item.
         if let Some(item) = q.get(id) {
@@ -394,7 +381,6 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
             q.items.push(item);
         }
     };
-    let _ = result;
     state.notify.notify_one();
     emit_queue_status(&state).await;
     state.persist().await;
@@ -513,12 +499,11 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
 
     // Delete the file on disk (best-effort).
     let mut file_msg = String::new();
-    if let Some(name) = &filename {
-        if let Some(path) = crate::library::resolve_safe(&download_dir, name) {
-            if let Err(e) = tokio::fs::remove_file(&path).await {
-                file_msg = format!(" (file: {e})");
-            }
-        }
+    if let Some(name) = &filename
+        && let Some(path) = crate::library::resolve_safe(&download_dir, name)
+        && let Err(e) = tokio::fs::remove_file(&path).await
+    {
+        file_msg = format!(" (file: {e})");
     }
 
     let removed = {
@@ -529,7 +514,7 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
         emit_queue_status(&state).await;
         // Refresh the library view too in case it's open elsewhere.
         let lib_frag = render::render_library_scan(&download_dir);
-        state.emit(crate::events::Event::Library(lib_frag));
+        state.emit(Event::Library(lib_frag));
         state.persist().await;
     }
     render::render_ack(&format!("deleted item {id}{file_msg}"), false)

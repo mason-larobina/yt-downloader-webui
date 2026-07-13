@@ -1,5 +1,4 @@
 //! `web-dl` entry point: CLI -> Config -> load queue -> start server.
-#![allow(dead_code)]
 mod config;
 mod events;
 mod library;
@@ -129,12 +128,11 @@ async fn main() -> Result<()> {
     tracing::info!("flushing queue on shutdown");
     let pending = {
         let q = state.queue.lock().await;
-        let n = q
-            .items
+
+        q.items
             .iter()
             .filter(|i| i.status == state::ItemStatus::Pending)
-            .count();
-        n
+            .count()
     };
     state.persist().await;
     tracing::info!("{pending} item(s) queued for re-start; bye");

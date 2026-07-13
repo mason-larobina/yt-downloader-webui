@@ -148,9 +148,11 @@ impl Queue {
     /// Returns the number removed.
     pub fn clear_terminal(&mut self) -> usize {
         let before = self.items.len();
-        self.items.retain(|i| match i.status {
-            ItemStatus::Done | ItemStatus::Failed | ItemStatus::Cancelled => false,
-            _ => true,
+        self.items.retain(|i| {
+            !matches!(
+                i.status,
+                ItemStatus::Done | ItemStatus::Failed | ItemStatus::Cancelled
+            )
         });
         before - self.items.len()
     }
@@ -179,10 +181,6 @@ pub struct QueueItem {
     pub id: u64,
     pub url: String,
     pub status: ItemStatus,
-    /// Video title resolved from the `--flat-playlist -j` probe (run in the
-    /// request handler), used as the row label before yt-dlp emits a
-    /// `Destination:`/filename. `None` for submitted URLs that were not
-    /// resolved by a probe (e.g. approved without title info).
     /// Video title resolved from the `--flat-playlist -j` probe, used as the
     /// row label before yt-dlp emits a `Destination:`/filename. `None` for
     /// submitted URLs until they are probed.
@@ -285,16 +283,10 @@ pub struct Progress {
     pub total_bytes_estimate: Option<f64>,
     pub speed: Option<f64>,
     pub eta: Option<f64>,
-    pub elapsed: Option<f64>,
-    pub fragment_index: Option<u64>,
-    pub fragment_count: Option<u64>,
     /// yt-dlp's numeric percentage (0..=100), e.g. `73.0`.
     pub percent: Option<f64>,
     /// yt-dlp's preformatted percentage string like " 73.0%".
     pub percent_str: Option<String>,
-    /// yt-dlp's preformatted speed string.
-    pub speed_str: Option<String>,
-    pub eta_str: Option<String>,
 }
 
 impl Progress {

@@ -50,7 +50,7 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<LibraryFile>> {
             mtime,
         });
     }
-    files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    files.sort_by_key(|f| std::cmp::Reverse(f.mtime));
     Ok(files)
 }
 
@@ -87,11 +87,11 @@ pub async fn get_library(
     render_library_scan(&state.cfg.download_dir)
 }
 
-/// Query params for /file/:name.
+/// Query params for /file/:name. `?inline=1` serves the file inline (for
+/// in-browser preview); the default is an attachment (download).
 #[derive(Deserialize, Default)]
 pub struct FileQuery {
     pub inline: Option<String>,
-    pub download: Option<String>,
 }
 
 /// GET /file/:name -- stream a file (inline or attachment), with single-range

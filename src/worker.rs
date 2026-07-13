@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_stream::stream;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -243,15 +243,13 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                     .map(|base| state.cfg.download_dir.join(base)),
             )
         };
-        if have_thumb.is_none() {
-            if let Some(vp) = video_path {
-                match crate::thumb::generate(&state.cfg.ffmpeg, &state.cfg.cache_dir, &vp).await {
-                    Ok(fname) => gen_thumb = Some(fname),
-                    Err(e) => {
-                        tracing::debug!(
-                            "ffmpeg thumbnail generation failed for item {item_id}: {e:#}"
-                        );
-                    }
+        if have_thumb.is_none()
+            && let Some(vp) = video_path
+        {
+            match crate::thumb::generate(&state.cfg.ffmpeg, &state.cfg.cache_dir, &vp).await {
+                Ok(fname) => gen_thumb = Some(fname),
+                Err(e) => {
+                    tracing::debug!("ffmpeg thumbnail generation failed for item {item_id}: {e:#}");
                 }
             }
         }
@@ -263,10 +261,10 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             if success {
                 item.status = ItemStatus::Done;
                 item.progress = None;
-                if let Some(fname) = &gen_thumb {
-                    if item.thumbnail.is_none() {
-                        item.thumbnail = Some(fname.clone());
-                    }
+                if let Some(fname) = &gen_thumb
+                    && item.thumbnail.is_none()
+                {
+                    item.thumbnail = Some(fname.clone());
                 }
                 tracing::info!("item {item_id} done");
             } else {
@@ -320,8 +318,6 @@ async fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(pipe: R, tx: mpsc::Se
     }
 }
 
-use tokio::io::AsyncRead;
-
 /// Drain any remaining buffered lines (after cancel) into the log.
 async fn drain(rx: &mut mpsc::Receiver<String>) {
     while let Ok(line) = rx.try_recv() {
@@ -336,10 +332,10 @@ async fn drain(rx: &mut mpsc::Receiver<String>) {
 ///     -- emitted before yt-dlp starts writing a new file.
 ///   * `[download] <path> has already been downloaded`
 ///     -- emitted when the file already exists on disk; yt-dlp then exits
-///       success **without** emitting any progress JSON or a `Destination:`
-///       line, so this is the only place we learn the filename. Without it
-///       the Done card would have no `filename` and thus no download/open
-///       buttons (and the ffmpeg thumbnail fallback would be skipped).
+///     success **without** emitting any progress JSON or a `Destination:`
+///     line, so this is the only place we learn the filename. Without it
+///     the Done card would have no `filename` and thus no download/open
+///     buttons (and the ffmpeg thumbnail fallback would be skipped).
 ///
 /// Returns the bare basename (last path segment). `None` for any other line.
 fn extract_dest_filename(text: &str) -> Option<String> {
@@ -392,13 +388,13 @@ async fn handle_line(
             {
                 let mut q = state.queue.lock().await;
                 if let Some(item) = q.get_mut(item_id) {
-                    if let Some(f) = filename {
-                        if item.filename.as_deref() != Some(&f) {
-                            // Use basename only for the label.
-                            let base = f.rsplit('/').next().unwrap_or(&f).to_string();
-                            item.filename = Some(base);
-                            need_queue = true;
-                        }
+                    if let Some(f) = filename
+                        && item.filename.as_deref() != Some(&f)
+                    {
+                        // Use basename only for the label.
+                        let base = f.rsplit('/').next().unwrap_or(&f).to_string();
+                        item.filename = Some(base);
+                        need_queue = true;
                     }
                     if status_str.as_deref() == Some("error") {
                         // capture error from progress if any
@@ -443,11 +439,6 @@ async fn handle_line(
                 )));
             }
         }
-        ParsedLine::FlatEntry(_) => {
-            // A flat-playlist entry line is not expected during a download
-            // (the download uses --progress-template, not -j); ignore it.
-            tracing::debug!("unexpected FlatEntry line in download phase");
-        }
         ParsedLine::Log(text) => {
             // Capture the real yt-dlp error message into the active item so the
             // queue row shows "Video unavailable" instead of a generic
@@ -487,11 +478,11 @@ async fn handle_line(
                 let mut need_queue = false;
                 {
                     let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id) {
-                        if item.filename.is_none() {
-                            item.filename = Some(f);
-                            need_queue = true;
-                        }
+                    if let Some(item) = q.get_mut(item_id)
+                        && item.filename.is_none()
+                    {
+                        item.filename = Some(f);
+                        need_queue = true;
                     }
                 }
                 if need_queue {
@@ -509,11 +500,11 @@ async fn handle_line(
                 let mut need_queue = false;
                 {
                     let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id) {
-                        if item.filename.as_deref() != Some(&f) {
-                            item.filename = Some(f);
-                            need_queue = true;
-                        }
+                    if let Some(item) = q.get_mut(item_id)
+                        && item.filename.as_deref() != Some(&f)
+                    {
+                        item.filename = Some(f);
+                        need_queue = true;
                     }
                 }
                 if need_queue {
@@ -616,8 +607,6 @@ pub struct ProbeOutcome {
     /// A single-video dict, if the URL was not a playlist. Its `url` is the
     /// *media* URL (do not enqueue); borrow `title`/`duration` only.
     pub single: Option<FlatEntry>,
-    /// yt-dlp exited successfully (exit code 0).
-    pub success: bool,
     /// Best-effort error message captured from stderr (`ERROR:`) or a spawn /
     /// timeout failure. `None` when nothing went wrong.
     pub error: Option<String>,
@@ -628,7 +617,6 @@ impl ProbeOutcome {
         ProbeOutcome {
             entries: Vec::new(),
             single: None,
-            success: false,
             error: Some(msg.into()),
         }
     }
@@ -641,7 +629,7 @@ pub enum ProbeEvent {
     Log(String),
     /// The probe finished; carries the classified [`ProbeOutcome`] rendered
     /// as the `result` SSE event (confirm cards or an error + Done button).
-    Done(ProbeOutcome),
+    Done(Box<ProbeOutcome>),
 }
 
 /// Probe one submitted URL with `--flat-playlist -j`, streaming each yt-dlp
@@ -671,7 +659,7 @@ pub fn probe_stream(
             Err(e) => {
                 let msg = format!("failed to spawn yt-dlp probe: {e}");
                 yield ProbeEvent::Log(format!("ERROR: {msg}"));
-                yield ProbeEvent::Done(ProbeOutcome::error(msg));
+                yield ProbeEvent::Done(Box::new(ProbeOutcome::error(msg)));
                 return;
             }
         };
@@ -737,10 +725,10 @@ pub fn probe_stream(
         if timed_out {
             // Kill the (possibly still running) child and bail.
             let _ = child.kill().await;
-            yield ProbeEvent::Done(ProbeOutcome::error(format!(
+            yield ProbeEvent::Done(Box::new(ProbeOutcome::error(format!(
                 "probe timed out after {}s",
                 PROBE_TIMEOUT.as_secs()
-            )));
+            ))));
             return;
         }
 
@@ -748,30 +736,28 @@ pub fn probe_stream(
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => {
-                yield ProbeEvent::Done(ProbeOutcome::error(format!(
+                yield ProbeEvent::Done(Box::new(ProbeOutcome::error(format!(
                     "yt-dlp probe wait error: {e}"
-                )));
+                ))));
                 return;
             }
         };
 
-        let success = status.success();
         // If we got entries or a single video, the probe succeeded for our
         // purposes even if yt-dlp printed a trailing WARNING; otherwise
         // surface the captured error (or a generic exit-status message).
         if !entries.is_empty() || single.is_some() {
-            yield ProbeEvent::Done(ProbeOutcome {
+            yield ProbeEvent::Done(Box::new(ProbeOutcome {
                 entries,
                 single,
-                success: true,
                 error: None,
-            });
+            }));
             return;
         }
-        yield ProbeEvent::Done(ProbeOutcome {
+        let success = status.success();
+        yield ProbeEvent::Done(Box::new(ProbeOutcome {
             entries,
             single,
-            success,
             error: err_msg.or_else(|| {
                 if success {
                     None
@@ -785,7 +771,7 @@ pub fn probe_stream(
                     ))
                 }
             }),
-        });
+        }));
     }
 }
 

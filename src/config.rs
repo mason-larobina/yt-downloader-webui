@@ -149,10 +149,10 @@ impl Cli {
 
 /// Resolve a home directory, preferring `$HOME`, falling back to the `dirs` crate.
 pub fn home_dir() -> Option<PathBuf> {
-    if let Some(h) = std::env::var_os("HOME") {
-        if !h.is_empty() {
-            return Some(PathBuf::from(h));
-        }
+    if let Some(h) = std::env::var_os("HOME")
+        && !h.is_empty()
+    {
+        return Some(PathBuf::from(h));
     }
     dirs::home_dir()
 }

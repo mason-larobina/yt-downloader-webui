@@ -61,9 +61,6 @@ impl<T> RingBuffer<T> {
         self.deque.push_back(item);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
-        self.deque.iter()
-    }
     /// Drain all entries into a Vec (used for snapshot replay).
     pub fn snapshot(&self) -> Vec<&T> {
         self.deque.iter().collect()
