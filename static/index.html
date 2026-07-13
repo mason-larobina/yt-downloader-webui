@@ -115,6 +115,18 @@
       if (input) input.focus();
     });
   })();
+
+  // Toggle the probe streaming logs on/off once a probe has finished (the
+  // "show logs" / "hide logs" button in the actions row). The default
+  // hide-on-success is handled purely in CSS (see .probe-area:has(.probe-form)
+  // in app.css), so this only needs to flip the override class.
+  window.toggleProbeLogs = function () {
+    var area = document.getElementById('probe-area');
+    if (!area) return;
+    var showing = area.classList.toggle('show-logs');
+    var btn = area.querySelector('.probe-logs-toggle');
+    if (btn) btn.textContent = showing ? 'hide logs' : 'show logs';
+  };
 </script>
 </body>
 </html>

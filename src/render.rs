@@ -576,7 +576,7 @@ pub fn render_probe_result(
             format!(r#"<div class="probe-card-sub"><span class="dur">{dur}</span></div>"#)
         };
         rows.push_str(&format!(
-            r##"<div class="probe-card"><label class="probe-check"><input type="checkbox" name="entry" value="{value}" checked></label>{thumb}<div class="probe-card-meta"><div class="probe-card-title">{idx}. {label}</div>{dur_html}</div></div>"##,
+            r##"<label class="probe-card"><input type="checkbox" name="entry" value="{value}" checked>{thumb}<div class="probe-card-meta"><div class="probe-card-title">{idx}. {label}</div>{dur_html}</div></label>"##,
             value = value,
             thumb = thumb_html,
             idx = idx,
@@ -587,7 +587,7 @@ pub fn render_probe_result(
 
     let n = cards.len();
     format!(
-        r##"<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML"><div class="probe-cards-list">{rows}</div><div class="probe-actions"><button type="submit">Confirm (<span class="sel-count">{n}</span>)</button><button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button></div></form>"##,
+        r##"<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML"><div class="probe-cards-list">{rows}</div><div class="probe-actions"><button type="button" class="probe-logs-toggle" onclick="toggleProbeLogs()">show logs</button><button type="submit">Confirm (<span class="sel-count">{n}</span>)</button><button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button></div></form>"##,
         rows = rows,
         n = n,
     )

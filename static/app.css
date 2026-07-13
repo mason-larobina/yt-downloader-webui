@@ -133,10 +133,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .probe-card {
   display: flex; gap: 8px; align-items: flex-start;
-  background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px;
+  background: var(--bg-2); border: 2px solid var(--line); border-radius: 6px; padding: 6px;
+  cursor: pointer; transition: border-color .1s ease, opacity .1s ease;
 }
-.probe-check { flex: 0 0 auto; padding-top: 2px; }
-.probe-check input { width: 16px; height: 16px; cursor: pointer; }
+/* The whole card toggles its (hidden) checkbox, so selection is conveyed by
+   the card border instead of a visible checkbox. Selected = accent border;
+   unselected = dimmed/grayed card so it's obviously de-selected. */
+.probe-card input[type="checkbox"] { display: none; }
+.probe-card:has(input:checked) { border-color: var(--accent); opacity: 1; }
+.probe-card:not(:has(input:checked)) { border-color: var(--bg-3); opacity: 0.5; }
+.probe-card:hover { opacity: 0.92; }
+.probe-card:has(input:checked):hover { opacity: 0.92; }
 .probe-thumb {
   flex: 0 0 auto; width: 80px; height: 45px; object-fit: cover; display: block;
   border-radius: 4px; background: var(--bar-bg);
@@ -155,6 +162,14 @@ button:disabled { opacity: 0.5; cursor: default; }
   position: sticky; bottom: 0; background: var(--bg-inset);
 }
 .probe-actions button { font-size: 13px; padding: 6px 14px; }
+.probe-logs-toggle { color: var(--muted); }
+/* On a successful probe (a .probe-form is rendered into #probe-cards) the
+   streaming logs are hidden by default; the `show-logs` class (toggled by the
+   "show logs" button in the actions row) re-reveals them. On a failure (no
+   form) the logs stay visible so the error context is preserved. Pure CSS via
+   :has() so it doesn't depend on SSE swap lifecycle events firing. */
+.probe-area:has(.probe-form) .probe-stream { display: none; }
+.probe-area.show-logs .probe-stream { display: block !important; }
 .probe-error {
   display: flex; align-items: center; gap: 10px; padding: 6px 4px;
 }
