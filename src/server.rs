@@ -460,10 +460,7 @@ async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>)
 /// in flight). Returns an empty `(no output yet)` body when the item has
 /// been cleared from the queue, so the poll degrades gracefully instead of
 /// swapping in a full-page fragment.
-async fn get_logs(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<u64>,
-) -> String {
+async fn get_logs(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
     let item = state.queue.lock().await.get(id).cloned();
     match item {
         Some(item) => render::render_log_lines(&item.logs),
@@ -479,10 +476,7 @@ async fn get_logs(
 /// loads htmx itself for log polling + the action buttons). When the item is
 /// no longer in the queue (cleared / never existed), serves a minimal
 /// "gone" page with a back link instead of a bare 404.
-async fn get_item_page(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn get_item_page(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Response {
     let item = state.queue.lock().await.get(id).cloned();
     let body = match item {
         Some(item) => render::render_item_page(&item),

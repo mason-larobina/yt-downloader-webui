@@ -369,7 +369,8 @@ pub fn render_item_gone() -> String {
   <div class="ip-gone">this video is no longer in the queue</div>
 </div>
 </body>
-</html>"#.to_string()
+</html>"#
+        .to_string()
 }
 #[derive(Template)]
 #[template(path = "log_lines.html")]
@@ -816,8 +817,14 @@ mod card_tests {
         assert!(html.contains(r#"title="download to this device"#));
         assert!(html.contains(r#"title="open/preview"#));
         assert!(html.contains(r#"title="delete from server"#));
-        assert!(html.contains(r#"title="inspect video"#), "inspect link tooltip");
-        assert!(html.contains(r#"href="/item/7""#), "inspect link targets details page");
+        assert!(
+            html.contains(r#"title="inspect video"#),
+            "inspect link tooltip"
+        );
+        assert!(
+            html.contains(r#"href="/item/7""#),
+            "inspect link targets details page"
+        );
         // Each action embeds an <img> icon (download/open/delete
         // + the always-present inspect link = 4 icons).
         assert_eq!(
@@ -875,7 +882,10 @@ mod card_tests {
     fn pending_card_overlay_has_cancel() {
         let html = render_card(&item(ItemStatus::Pending, None));
         assert!(html.contains(r#"title="cancel download"#));
-        assert!(html.contains(r#"title="inspect video"#), "inspect link tooltip");
+        assert!(
+            html.contains(r#"title="inspect video"#),
+            "inspect link tooltip"
+        );
         assert_eq!(html.matches("<img").count(), 2, "cancel + inspect icons");
         assert!(
             html.contains(r#"src="/static/icons/stop.svg"#),
@@ -938,8 +948,14 @@ mod item_page_tests {
 
         assert!(html.starts_with("<!DOCTYPE html>"), "full document");
         assert!(html.contains(r#"href="/static/app.css""#), "stylesheet");
-        assert!(html.contains(r#"<script src="/static/htmx.min.js">"#), "htmx");
-        assert!(html.contains(r#"<a class="ip-back" href="/">"#), "back link");
+        assert!(
+            html.contains(r#"<script src="/static/htmx.min.js">"#),
+            "htmx"
+        );
+        assert!(
+            html.contains(r#"<a class="ip-back" href="/">"#),
+            "back link"
+        );
         // Full thumbnail uses the cached thumbnail route.
         assert!(html.contains(r#"<img src="/thumb/thumb-abc.jpg""#));
         // Big text buttons for a finished file, with percent-encoded links.
@@ -956,7 +972,10 @@ mod item_page_tests {
         assert!(html.contains(r#"id="item-log-lines"#), "log body");
         assert!(html.contains("[download] 100%"), "log line");
         // Done items don't poll (no more output expected).
-        assert!(!html.contains("hx-trigger=\"every 2s\""), "no polling when done");
+        assert!(
+            !html.contains("hx-trigger=\"every 2s\""),
+            "no polling when done"
+        );
     }
 
     /// An in-flight item's page shows Cancel (not View/Download/Delete) and
@@ -968,7 +987,10 @@ mod item_page_tests {
         assert!(html.contains(r#"class="big-btn cancel"#));
         assert!(html.contains(r#"hx-post="/cancel/42""#));
         assert!(!html.contains(r#"class="big-btn view"#));
-        assert!(html.contains(r#"hx-get="/logs/42?lines=1""#), "poll endpoint");
+        assert!(
+            html.contains(r#"hx-get="/logs/42?lines=1""#),
+            "poll endpoint"
+        );
         assert!(html.contains(r#"hx-trigger="every 2s""#), "polls every 2s");
     }
 
