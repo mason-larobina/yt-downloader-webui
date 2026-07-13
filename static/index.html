@@ -17,7 +17,7 @@
       <form class="submit"
             hx-post="/download" hx-target="#header-input" hx-swap="innerHTML"
             hx-disabled-elt="#dl-btn">
-        <input type="text" name="url" placeholder="paste a URL"
+        <input type="text" name="url" placeholder="Paste a URL..."
                autocomplete="off" autofocus>
         <button type="submit" id="dl-btn">Add</button>
       </form>
@@ -60,6 +60,28 @@
       if (!target.textContent.trim()) return;
       clearTimeout(timer);
       timer = setTimeout(function () { target.textContent = ''; }, 4000);
+    });
+  })();
+
+  // Intercept Ctrl/Cmd+V anywhere on the page: drop the clipboard contents
+  // into the URL field and submit the form immediately, so the user can
+  // paste a URL without first focusing the input. Skipped while probing
+  // (no URL input present) and never hijacks paste into another text field.
+  (function () {
+    document.addEventListener('paste', function (e) {
+      var input = document.querySelector('#header-input input[name="url"]');
+      if (!input) return; // header is showing the probe area
+      var t = e.target;
+      if ((t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) && t !== input) {
+        return; // let native paste happen in other fields
+      }
+      var text = e.clipboardData && e.clipboardData.getData('text');
+      if (!text) return;
+      text = text.trim();
+      if (!text) return;
+      e.preventDefault();
+      input.value = text;
+      if (input.form) input.form.requestSubmit();
     });
   })();
 
