@@ -388,13 +388,20 @@ async fn handle_line(
             {
                 let mut q = state.queue.lock().await;
                 if let Some(item) = q.get_mut(item_id) {
-                    if let Some(f) = filename
-                        && item.filename.as_deref() != Some(&f)
-                    {
-                        // Use basename only for the label.
+                    if let Some(f) = filename {
+                        // Use basename only for the label. Compare against
+                        // the *basename* (not the full path `f`): yt-dlp's
+                        // progress JSON reports the full destination path on
+                        // every tick, so comparing against `f` would be true
+                        // every tick and re-render all cards (via a `queue`
+                        // SSE event -> `#cards` innerHTML swap) several times
+                        // per second for the whole download. Only re-render
+                        // when the label itself actually changes.
                         let base = f.rsplit('/').next().unwrap_or(&f).to_string();
-                        item.filename = Some(base);
-                        need_queue = true;
+                        if item.filename.as_deref() != Some(&base) {
+                            item.filename = Some(base);
+                            need_queue = true;
+                        }
                     }
                     if status_str.as_deref() == Some("error") {
                         // capture error from progress if any
@@ -410,14 +417,22 @@ async fn handle_line(
             }
 
             // Throttled status emit. Always emit on finished/error.
+            //
+            // Only the *banner* (status event) updates on every throttle tick
+            // -- it carries the live progress bar / percent / ETA. The cards
+            // have no progress bar (progress lives in the banner), so there is
+            // no reason to re-render the whole `#cards` list each tick: doing
+            // so destroys and recreates every card's DOM every 200ms, which
+            // re-triggers the `.card-overlay` opacity fade-in on the active
+            // card and drops `:hover` state on any card the user is
+            // interacting with. Card-visible changes (filename/label, error,
+            // status transitions) are emitted by their own triggers below and
+            // by `emit_final` when the item terminates.
             let is_terminal = matches!(status_str.as_deref(), Some("finished") | Some("error"));
             let now = std::time::Instant::now();
             if is_terminal || now.duration_since(*last_status_emit) >= STATUS_THROTTLE {
                 *last_status_emit = now;
                 need_status = true;
-                // Re-render the cards on every throttle tick so the active
-                // card's progress bar advances (not just on filename change).
-                need_queue = true;
             }
 
             if need_queue {
