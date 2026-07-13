@@ -354,6 +354,27 @@ fn extract_dest_filename(text: &str) -> Option<String> {
     Some(path.rsplit('/').next().unwrap_or(path).to_string())
 }
 
+/// Extract the final on-disk filename from yt-dlp's `[Merger]` status line:
+///
+///   `[Merger] Merging formats into "<path>"`
+///
+/// yt-dlp emits this *after* it has downloaded every requested stream when a
+/// target container (e.g. `-S ext:mp4` / `--merge-output-format mp4`) is in
+/// effect. Each stream's `[download] Destination:`/progress tick names only an
+/// intermediate per-stream temp file (`.f399.mp4`, `.f141.m4a`, ...), and the
+/// last progress tick wins in [`handle_line`], leaving the item labelled with a
+/// `.m4a`/`.f141.*` intermediate instead of the real merged output. The
+/// `[Merger]` line is the authoritative final name, so it must override any
+/// previously captured filename. Returns the bare basename. `None` otherwise.
+fn extract_merger_filename(text: &str) -> Option<String> {
+    let s = text.strip_prefix("[Merger] Merging formats into")?;
+    let s = s.trim();
+    // yt-dlp quotes the path: `Merging formats into "/abs/path.mp4"`.
+    let s = s.strip_prefix('"')?;
+    let s = s.strip_suffix('"')?;
+    Some(s.rsplit('/').next().unwrap_or(s).to_string())
+}
+
 /// Handle one parsed output line: update active item + emit events.
 async fn handle_line(
     state: &Arc<AppState>,
@@ -458,7 +479,8 @@ async fn handle_line(
             }
 
             // Try to extract a filename from yt-dlp's status lines (see
-            // `extract_dest_filename`).
+            // `extract_dest_filename`). Intermediate per-stream destinations
+            // only fill in the name when nothing is set yet.
             let dest_filename = extract_dest_filename(&text);
 
             if let Some(f) = dest_filename {
@@ -467,6 +489,28 @@ async fn handle_line(
                     let mut q = state.queue.lock().await;
                     if let Some(item) = q.get_mut(item_id) {
                         if item.filename.is_none() {
+                            item.filename = Some(f);
+                            need_queue = true;
+                        }
+                    }
+                }
+                if need_queue {
+                    let q = state.queue.lock().await;
+                    state.emit(Event::Queue(render::render_queue(&q)));
+                }
+            }
+
+            // The `[Merger]` line names the final merged file when a target
+            // container (e.g. mp4) remuxes separate audio+video streams. It is
+            // emitted *after* all per-stream downloads, so it is the
+            // authoritative final name and must override the intermediate
+            // `.f399.mp4` / `.f141.m4a` filenames captured above.
+            if let Some(f) = extract_merger_filename(&text) {
+                let mut need_queue = false;
+                {
+                    let mut q = state.queue.lock().await;
+                    if let Some(item) = q.get_mut(item_id) {
+                        if item.filename.as_deref() != Some(&f) {
                             item.filename = Some(f);
                             need_queue = true;
                         }
@@ -791,5 +835,38 @@ mod tests {
         );
         assert_eq!(extract_dest_filename("ERROR: video unavailable"), None);
         assert_eq!(extract_dest_filename(""), None);
+    }
+
+    /// `[Merger] Merging formats into "<path>"` yields the bare basename of
+    /// the final merged file. Regression for the reported bug where, with a
+    /// target mp4 container, the item ended up labelled with the last
+    /// intermediate stream's name (`.f141.m4a`) instead of the merged `.mp4`.
+    #[test]
+    fn extract_merger_filename_basic() {
+        assert_eq!(
+            extract_merger_filename(
+                "[Merger] Merging formats into \"/home/lambo/Downloads/yt-dlp/Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].mp4\""
+            ),
+            Some("Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].mp4".to_string())
+        );
+    }
+
+    /// Non-merger lines (including the intermediate `[download] Destination`
+    /// lines for per-stream temp files) must not match the merger extractor.
+    #[test]
+    fn extract_merger_filename_other_lines() {
+        assert_eq!(
+            extract_merger_filename(
+                "[download] Destination: /tmp/redl/Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].f141.m4a"
+            ),
+            None
+        );
+        assert_eq!(
+            extract_merger_filename(
+                "Deleting original file /tmp/redl/x.f141.m4a (pass -k to keep)"
+            ),
+            None
+        );
+        assert_eq!(extract_merger_filename(""), None);
     }
 }
