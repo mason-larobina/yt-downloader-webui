@@ -2,6 +2,7 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// `web-dl` -- a single-binary web wrapper around `yt-dlp`.
 #[derive(Parser, Debug)]
@@ -48,6 +49,11 @@ pub struct Cli {
     #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8080")]
     pub bind: String,
 
+    /// Sleep between consecutive downloads (seconds) to avoid hammering the
+    /// source. Set to 0 to disable. Default: 20.
+    #[arg(long, value_name = "SECONDS", default_value_t = 20)]
+    pub sleep: u64,
+
     /// Verbose server logs (web_dl=debug).
     #[arg(short, long)]
     pub verbose: bool,
@@ -72,6 +78,8 @@ pub struct Config {
     pub cache_dir: PathBuf,
     pub addr: SocketAddr,
     pub timeout: Option<u64>,
+    /// Sleep between consecutive downloads (rate-limit). 0 disables.
+    pub sleep: Duration,
 }
 
 impl Cli {
@@ -143,6 +151,7 @@ impl Cli {
             cache_dir,
             addr,
             timeout: self.timeout,
+            sleep: Duration::from_secs(self.sleep),
         })
     }
 }

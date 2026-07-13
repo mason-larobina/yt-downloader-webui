@@ -51,8 +51,31 @@ async fn run(state: Arc<AppState>) {
         // 2. Download this item (the probe is now done synchronously in the
         //    POST /download handler -- the worker only ever downloads).
         run_download(&state, item).await;
+
+        // 3. Sleep between consecutive downloads to rate-limit the source,
+        //    but only if another item is queued (no point sleeping when the
+        //    queue just emptied). Interruptible by shutdown / a new enqueue
+        //    so the wait is never needlessly blocking.
+        if state.cfg.sleep > Duration::ZERO && has_pending(&state).await {
+            tracing::info!(
+                "sleeping {}s before next download",
+                state.cfg.sleep.as_secs()
+            );
+            tokio::select! {
+                _ = tokio::time::sleep(state.cfg.sleep) => {}
+                _ = state.shutdown.cancelled() => break,
+                _ = state.notify.notified() => {}
+            }
+        }
     }
     tracing::info!("worker exiting");
+}
+
+/// Whether the queue currently has any Pending items (used to decide if the
+/// inter-download sleep is worth doing).
+async fn has_pending(state: &Arc<AppState>) -> bool {
+    let q = state.queue.lock().await;
+    q.items.iter().any(|i| i.status == ItemStatus::Pending)
 }
 
 /// Find the first Pending item, flip it to Active, mint a cancel token, and
