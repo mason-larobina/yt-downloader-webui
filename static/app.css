@@ -283,6 +283,10 @@ button:disabled { opacity: 0.5; cursor: default; }
   overflow: hidden; display: flex; flex-direction: column; position: relative; cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s, transform 0.05s;
   box-shadow: var(--shadow-sm);
+  /* Guarantee the thumbnail + title stay visible even when the viewport is
+     short (the grid otherwise shrinks cards and clips them). The thumb is
+     16:9; a 180px floor keeps thumb + title legible at the min column width. */
+  min-height: 260px;
 }
 .card:hover { box-shadow: var(--shadow-md); }
 .card:active { transform: translateY(1px); }
@@ -293,10 +297,12 @@ button:disabled { opacity: 0.5; cursor: default; }
    buttons stay the things you tap. */
 .card-link { position: absolute; inset: 0; z-index: 1; color: inherit; text-decoration: none; }
 .card-link:focus-visible { outline: 2px solid var(--brand-solid); outline-offset: -4px; border-radius: calc(var(--radius) - 2px); }
-/* Status-driven border colour (bold + saturated so the state reads at a glance). */
+/* Status-driven border colour. Queued/active/errored states use their
+   bright pastel hue so they pop; *done* is deliberately muted to a mid gray
+   so completed cards recede and the actionable states stand out at a glance. */
 .card.pending   { border-color: var(--pending); }
 .card.active    { border-color: var(--active); box-shadow: 0 0 0 1px var(--active), var(--shadow-sm); }
-.card.done      { border-color: var(--done); }
+.card.done      { border-color: var(--line-2); }
 .card.failed    { border-color: var(--failed); }
 .card.cancelled { border-color: var(--cancelled); }
 
