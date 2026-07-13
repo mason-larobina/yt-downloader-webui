@@ -587,7 +587,7 @@ pub fn render_probe_result(
 
     let n = cards.len();
     format!(
-        r##"<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML"><div class="probe-cards-list">{rows}</div><div class="probe-actions"><button type="button" class="probe-logs-toggle" onclick="toggleProbeLogs()">show logs</button><button type="submit">Confirm (<span class="sel-count">{n}</span>)</button><button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button></div></form>"##,
+        r##"<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML"><div class="probe-cards-list">{rows}</div><div class="probe-actions"><button type="button" class="probe-logs-toggle" onclick="toggleProbeLogs()">show logs</button><span class="probe-sel-actions"><button type="button" onclick="probeSelectAll()">select all</button><button type="button" onclick="probeSelectNone()">deselect all</button></span><button type="submit">Confirm (<span class="sel-count">{n}</span>)</button><button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button></div></form>"##,
         rows = rows,
         n = n,
     )

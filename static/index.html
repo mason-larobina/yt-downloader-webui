@@ -127,6 +127,21 @@
     var btn = area.querySelector('.probe-logs-toggle');
     if (btn) btn.textContent = showing ? 'hide logs' : 'show logs';
   };
+
+  // Select / deselect every probe card at once (useful for large playlists).
+  // Setting .checked directly doesn't fire a change event, so we dispatch one
+  // so the existing listener updates the "Confirm (N)" count + the card's
+  // selected/unselected border styling (which is :has(input:checked) based).
+  function probeBulkSet(checked) {
+    var form = document.querySelector('.probe-form');
+    if (!form) return;
+    form.querySelectorAll('input[name="entry"]').forEach(function (box) {
+      box.checked = checked;
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+  window.probeSelectAll = function () { probeBulkSet(true); };
+  window.probeSelectNone = function () { probeBulkSet(false); };
 </script>
 </body>
 </html>

@@ -128,7 +128,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* ---------- probe result cards ---------- */
 .probe-form { display: flex; flex-direction: column; gap: 8px; }
 .probe-cards-list {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 8px; align-content: start;
 }
 .probe-card {
@@ -145,17 +145,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 .probe-card:hover { opacity: 0.92; }
 .probe-card:has(input:checked):hover { opacity: 0.92; }
 .probe-thumb {
-  flex: 0 0 auto; width: 80px; height: 45px; object-fit: cover; display: block;
+  flex: 0 0 auto; width: 160px; height: 90px; object-fit: cover; display: block;
   border-radius: 4px; background: var(--bar-bg);
 }
 .probe-thumb-placeholder { background:
   repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 8px, var(--bg-2) 8px, var(--bg-2) 16px); }
 .probe-card-meta { flex: 1 1 auto; min-width: 0; }
 .probe-card-title {
-  font-size: 12px; font-weight: 500; word-break: break-word;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 13px; font-weight: 500; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.probe-card-sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.probe-card-sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .probe-card-sub .dur { font-family: monospace; }
 .probe-actions {
   display: flex; align-items: center; gap: 8px; padding: 4px 2px 2px;
