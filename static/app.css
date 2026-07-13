@@ -125,6 +125,24 @@ button:disabled { opacity: 0.5; cursor: default; }
 .probe-cards { flex: 1 1 auto; overflow-y: auto; padding: 8px; min-height: 0; }
 .probe-cards:empty { display: none; }
 
+/* 2-pane layout: toggling "show logs" on a successful probe turns the area
+   into a grid -- head on top spanning full width, cards (left) | logs (right)
+   side by side. Grid areas place the children regardless of DOM order, so the
+   stream (which precedes the cards in the HTML) still lands in the right
+   pane. */
+.probe-area.show-logs {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas: "head head" "cards logs";
+}
+.probe-area.show-logs .probe-head { grid-area: head; }
+.probe-area.show-logs .probe-cards { grid-area: cards; }
+.probe-area.show-logs .probe-stream {
+  grid-area: logs; flex: none; max-height: none; min-height: 0;
+  font-size: 13px; line-height: 1.5; border-left: 1px solid var(--line);
+}
+
 /* ---------- probe result cards ---------- */
 .probe-form { display: flex; flex-direction: column; gap: 8px; }
 .probe-cards-list {
@@ -165,11 +183,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 .probe-logs-toggle { color: var(--muted); }
 /* On a successful probe (a .probe-form is rendered into #probe-cards) the
    streaming logs are hidden by default; the `show-logs` class (toggled by the
-   "show logs" button in the actions row) re-reveals them. On a failure (no
-   form) the logs stay visible so the error context is preserved. Pure CSS via
-   :has() so it doesn't depend on SSE swap lifecycle events firing. */
-.probe-area:has(.probe-form) .probe-stream { display: none; }
-.probe-area.show-logs .probe-stream { display: block !important; }
+   "show logs" button) switches to the 2-pane grid layout above and re-reveals
+   them in the right pane. On a failure (no form) the logs stay visible so the
+   error context is preserved. Pure CSS via :has() so it doesn't depend on SSE
+   swap lifecycle events firing. */
+.probe-area:has(.probe-form):not(.show-logs) .probe-stream { display: none; }
 .probe-error {
   display: flex; align-items: center; gap: 10px; padding: 6px 4px;
 }
