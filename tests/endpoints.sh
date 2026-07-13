@@ -2,7 +2,8 @@
 # Test the queue control endpoints + file serving + path-traversal guards.
 #
 # Covers DESIGN.md Sec. 6/9:
-#   POST /download, /cancel/:id, /retry/:id, /clear
+#   POST /download (header -> probe-area shell), GET /probe (SSE result),
+#   POST /confirm (enqueue selected), /cancel/:id, /retry/:id, /clear
 #   GET  /library, /file/:name (inline + download, range)
 #   POST /delete/:name
 #   Path traversal: /file/.., /file/<encoded> -> 404
@@ -38,8 +39,6 @@ wait_for_port() {
 
 WORK="$(mktemp -d -t web-dl-ep.XXXXXX)"
 DL="$WORK/dl"; STATE="$WORK/state"; mkdir -p "$DL" "$STATE"
-# Server self-terminates via --timeout after the assertions run, so the only
-# cleanup left is the tmpdir. (PIDS kept for the readiness-wait fallback.)
 PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done; rm -rf "$WORK"; }
 trap cleanup EXIT
@@ -49,13 +48,10 @@ if [[ ! -x "$BIN" ]]; then
   (cd "$ROOT" && cargo build --release)
 fi
 
-# --timeout caps the server's lifetime so it self-terminates once the test is
-# done; we then `wait` on it for its exit status. A short readiness probe
-# replaces the old fixed `sleep 1.5`.
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-dir "$STATE" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
-  --timeout 20 \
+  --timeout 30 \
   > "$WORK/server.log" 2>&1 &
 SRV=$!
 PIDS+=("$SRV")
@@ -73,19 +69,32 @@ check() {
 echo "=== GET /library on empty dir ==="
 curl -s "$base/library" | grep -q 'no files' && echo "ok   empty library" || { echo "FAIL: empty library"; fail=1; }
 
-echo "=== POST /download with empty body ==="
-ack=$(curl -s -X POST "$base/download" --data-urlencode 'urls=')
-check "empty post" "paste at least one URL" "$ack"
+echo "=== GET /header returns the input form ==="
+frag=$(curl -s "$base/header")
+check "header form posts /download" 'hx-post="/download"' "$frag"
+check "header form has url field" 'name="url"' "$frag"
 
-echo "=== POST /download with a failing URL (probe error -> fragment, no queue item) ==="
+echo "=== POST /download with empty body -> inline error form ==="
+ack=$(curl -s -X POST "$base/download" --data-urlencode 'url=')
+check "empty post" "paste a URL" "$ack"
+check "empty post restores form" 'name="url"' "$ack"
+
+echo "=== POST /download with a URL -> probe-area shell (sse-connect wired) ==="
+frag=$(curl -s -X POST "$base/download" --data-urlencode "url=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4")
+check "probe-area shell" 'id="probe-area"' "$frag"
+check "probe-area sse-connect" 'sse-connect="/probe?url=' "$frag"
+check "probe-area has cancel" 'hx-get="/header"' "$frag"
+
+echo "=== GET /probe with a failing URL (SSE result -> error, no enqueue) ==="
 # A nonexistent YouTube video ID fails at probe time (extraction) deterministically,
 # with or without cookies -- yt-dlp prints `ERROR: [youtube] ...: Video unavailable`.
-# Under the new flow the probe runs in POST /download itself, so the ERROR is
-# returned as an error fragment into #approve and NOTHING is enqueued (a bad URL
-# no longer pollutes the queue / state dir).
-ack=$(curl -s -X POST "$base/download" --data-urlencode 'urls=https://www.youtube.com/watch?v=aaaaaaaaaaa')
-check "probe error fragment" 'class="err"' "$ack"
-check "probe error message" "Video unavailable" "$ack"
+# Under the new flow the probe streams on GET /probe, so the ERROR arrives in the
+# `result` event (an error + Done button), and NOTHING is enqueued.
+timeout 30 curl -sN --get "$base/probe" --data-urlencode 'url=https://www.youtube.com/watch?v=aaaaaaaaaaa' > "$WORK/probe.err" 2>/dev/null || true
+result_data=$(awk 'f&&/^data: /{sub(/^data: /,""); print; exit} /^event: result$/{f=1}' "$WORK/probe.err")
+check "probe error fragment" 'class="err"' "$result_data"
+check "probe error message" "Video unavailable" "$result_data"
+check "probe error has Done button" '>Done<' "$result_data"
 # Confirm nothing was enqueued: a fresh SSE snapshot has no queue row.
 timeout 2 curl -sN "$base/events" > "$WORK/sse.raw" 2>/dev/null || true
 if grep -q 'class="card ' "$WORK/sse.raw"; then
@@ -93,28 +102,47 @@ if grep -q 'class="card ' "$WORK/sse.raw"; then
 else
   echo "ok   no item enqueued for failed probe"
 fi
-# The state dir should still be empty.
 if [[ -n "$(ls -A "$STATE" 2>/dev/null)" ]]; then
   echo "FAIL: state dir should be empty after a failed probe"; fail=1
 else
   echo "ok   state dir empty after failed probe"
 fi
 
-# retry needs a terminal (Failed/Cancelled) queue item. Under the new flow a
-# failing URL never queues, so create a Cancelled item by enqueuing a real
-# download and cancelling it while it is active, then retry that.
-ITEM_ID=""
-echo "=== enqueue a real download to cancel + retry ==="
-curl -s -X POST "$base/download" --data-urlencode 'urls=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4' >/dev/null
+# Drive the probe -> confirm flow for a real URL, returning the entry JSON.
+probe_and_confirm() {
+  local url="$1"
+  timeout 90 curl -sN --get "$base/probe" --data-urlencode "url=$url" > "$WORK/probe.ok" 2>/dev/null || true
+  python3 - "$WORK/probe.ok" <<'PY'
+import re, sys, html
+data = open(sys.argv[1]).read()
+idx = data.find("event: result")
+if idx < 0:
+    sys.exit("no result event")
+m = re.search(r'^data: (.*)$', data[idx:], re.M)
+if not m:
+    sys.exit("no data line")
+vals = re.findall(r'name="entry" value="([^"]*)"', m.group(1))
+if not vals:
+    sys.exit("no entry checkbox")
+print(html.unescape(vals[0]))
+PY
+}
+
+# retry needs a terminal (Failed/Cancelled) queue item. Create a Cancelled item
+# by confirming a real download and cancelling it while it is active, then retry.
+echo "=== probe + confirm a real download to cancel + retry ==="
+ENTRY=$(probe_and_confirm "https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4")
+curl -s -X POST "$base/confirm" --data-urlencode "entry=$ENTRY" >/dev/null
 # Stream SSE briefly, looking for a cancel button on an active row.
 timeout 8 curl -sN "$base/events" > "$WORK/sse.retry" 2>/dev/null || true
 ACTIVE_ID=$(grep -oE 'cancel/[0-9]+' "$WORK/sse.retry" | head -1 | grep -oE '[0-9]+')
 if [[ -n "$ACTIVE_ID" ]]; then
   curl -s -X POST "$base/cancel/$ACTIVE_ID" >/dev/null
-  # Give the worker a moment to mark it Cancelled, then look for a retry button.
   sleep 0.5
   timeout 2 curl -sN "$base/events" > "$WORK/sse.retry2" 2>/dev/null || true
   ITEM_ID=$(grep -oE 'retry/[0-9]+' "$WORK/sse.retry2" | head -1 | grep -oE '[0-9]+')
+else
+  ITEM_ID=""
 fi
 
 echo "=== POST /retry/${ITEM_ID:-<none>} ==="
@@ -165,7 +193,6 @@ echo "delete ack: $ack"
 echo
 if [[ $fail -eq 0 ]]; then echo "PASS"; else echo "FAIL"; fi
 
-# Let the --timeout expire / server exit on its own, surfacing its log.
 wait "$SRV" 2>/dev/null || true
 echo
 echo "=== server log ==="

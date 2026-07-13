@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_stream::stream;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -558,25 +559,26 @@ async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
 }
 
 // ---------------------------------------------------------------------------
-// Synchronous probe (runs in POST /download, not the worker)
+// Streaming probe (drives the GET /probe SSE stream)
 // ---------------------------------------------------------------------------
 
 /// How long a probe is allowed to run before we give up and kill it. The
 /// probe is `--flat-playlist -j` (no download), so this is generous; it only
-/// guards against a hung yt-dlp hanging the request handler.
+/// guards against a hung yt-dlp hanging the SSE stream.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Outcome of probing one submitted URL with `yt-dlp --flat-playlist -j`.
 ///
 /// The probe classifies the URL without downloading:
 /// - a **playlist** yields N `_type:"url"` entries whose `url` is already the
-///   full per-video watch URL -> presented for approval (never persisted);
+///   full per-video watch URL -> presented as confirm cards (never persisted);
 /// - a **single video** yields one full video dict (no playlist entries) ->
 ///   the caller enqueues the *original* submitted URL directly (the dict's
 ///   `url` is a media URL, not a watch URL), borrowing only title/duration.
 ///
 /// Because `kill_on_drop(true)` is set on the command, a dropped probe future
-/// (request cancelled, server shutdown) kills the child automatically.
+/// (client disconnects the SSE stream, server shutdown) kills the child
+/// automatically.
 pub struct ProbeOutcome {
     /// Playlist entries (`_type:"url"` with a `url`). Empty for a single video.
     pub entries: Vec<FlatEntry>,
@@ -601,106 +603,158 @@ impl ProbeOutcome {
     }
 }
 
-/// Probe one submitted URL with `--flat-playlist -j` and classify it. Runs
-/// concurrently with the worker's downloads (it writes no files, emits no
-/// progress ticks) and bounds itself with [`PROBE_TIMEOUT`]. Stderr `ERROR:`
-/// lines are harvested into [`ProbeOutcome::error`]; nothing is broadcast to
-/// the global log ring / SSE (the probe is a private request-handler
-/// interaction whose result is returned to the caller).
-pub async fn probe(state: &Arc<AppState>, url: &str) -> ProbeOutcome {
-    let (yt_dlp, browser) = {
-        let cfg = &state.cfg;
-        (cfg.yt_dlp.clone(), cfg.cookies_from_browser.clone())
-    };
+/// One event emitted by the streaming probe ([`probe_stream`]).
+pub enum ProbeEvent {
+    /// One yt-dlp output line (stdout or stderr); forwarded to the SSE
+    /// stream's `log` event so the header shows live probe progress.
+    Log(String),
+    /// The probe finished; carries the classified [`ProbeOutcome`] rendered
+    /// as the `result` SSE event (confirm cards or an error + Done button).
+    Done(ProbeOutcome),
+}
 
-    let mut child = match ytdlp::build_probe(&yt_dlp, browser.as_deref(), url).spawn() {
-        Ok(c) => c,
-        Err(e) => return ProbeOutcome::error(format!("failed to spawn yt-dlp probe: {e}")),
-    };
+/// Probe one submitted URL with `--flat-playlist -j`, streaming each yt-dlp
+/// output line as a [`ProbeEvent::Log`] and finishing with a single
+/// [`ProbeEvent::Done`]. Runs concurrently with the worker's downloads (it
+/// writes no files, emits no progress ticks) and bounds itself with
+/// [`PROBE_TIMEOUT`]. Stderr `ERROR:` lines are harvested into
+/// [`ProbeOutcome::error`]; nothing is broadcast to the global log ring /
+/// `/events` SSE (the probe is a private request-handler interaction whose
+/// result is returned to the caller's dedicated `/probe` stream).
+///
+/// The returned stream owns the spawned `yt-dlp` child (`kill_on_drop`), so
+/// dropping the stream -- e.g. when the browser closes the EventSource
+/// (cancel) or navigates away -- kills the probe process promptly.
+pub fn probe_stream(
+    state: Arc<AppState>,
+    url: String,
+) -> impl futures_util::Stream<Item = ProbeEvent> {
+    stream! {
+        let (yt_dlp, browser) = {
+            let cfg = &state.cfg;
+            (cfg.yt_dlp.clone(), cfg.cookies_from_browser.clone())
+        };
 
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let (tx, mut rx) = mpsc::channel::<String>(256);
-    if let Some(out) = stdout {
-        let tx = tx.clone();
-        tokio::spawn(async move { pump_lines(out, tx).await });
-    }
-    if let Some(err) = stderr {
-        let tx = tx.clone();
-        tokio::spawn(async move { pump_lines(err, tx).await });
-    }
-    drop(tx);
-
-    let mut entries: Vec<FlatEntry> = Vec::new();
-    let mut single: Option<FlatEntry> = None;
-    let mut err_msg: Option<String> = None;
-
-    let drain_result = tokio::time::timeout(PROBE_TIMEOUT, async {
-        while let Some(line) = rx.recv().await {
-            if let Some(entry) = parse_flat_line(&line) {
-                if entry.is_playlist_entry() {
-                    entries.push(entry);
-                } else if single.is_none() {
-                    single = Some(entry);
-                }
-                continue;
+        let mut child = match ytdlp::build_probe(&yt_dlp, browser.as_deref(), &url).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("failed to spawn yt-dlp probe: {e}");
+                yield ProbeEvent::Log(format!("ERROR: {msg}"));
+                yield ProbeEvent::Done(ProbeOutcome::error(msg));
+                return;
             }
-            // Non-JSON line (rare on stdout; common on stderr). Harvest the
-            // last `ERROR:` line as the surfaced message.
-            if let Some(rest) = line.strip_prefix("ERROR:") {
-                let msg = rest.trim();
-                if !msg.is_empty() {
-                    err_msg = Some(msg.to_string());
+        };
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (tx, mut rx) = mpsc::channel::<String>(256);
+        if let Some(out) = stdout {
+            let tx = tx.clone();
+            tokio::spawn(async move { pump_lines(out, tx).await });
+        }
+        if let Some(err) = stderr {
+            let tx = tx.clone();
+            tokio::spawn(async move { pump_lines(err, tx).await });
+        }
+        drop(tx);
+
+        let mut entries: Vec<FlatEntry> = Vec::new();
+        let mut single: Option<FlatEntry> = None;
+        let mut err_msg: Option<String> = None;
+
+        // Overall deadline (not per-line): a single pinned sleep future
+        // advanced across the whole loop.
+        let deadline = tokio::time::sleep(PROBE_TIMEOUT);
+        tokio::pin!(deadline);
+        let mut timed_out = false;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut deadline => {
+                    timed_out = true;
+                    break;
+                }
+                line = rx.recv() => {
+                    match line {
+                        None => break,
+                        Some(line) => {
+                            yield ProbeEvent::Log(line.clone());
+                            if let Some(entry) = parse_flat_line(&line) {
+                                if entry.is_playlist_entry() {
+                                    entries.push(entry);
+                                } else if single.is_none() {
+                                    single = Some(entry);
+                                }
+                                continue;
+                            }
+                            // Non-JSON line (rare on stdout; common on
+                            // stderr). Harvest the last `ERROR:` line as the
+                            // surfaced message.
+                            if let Some(rest) = line.strip_prefix("ERROR:") {
+                                let msg = rest.trim();
+                                if !msg.is_empty() {
+                                    err_msg = Some(msg.to_string());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-    })
-    .await;
 
-    if drain_result.is_err() {
-        // Timed out: kill the (possibly still running) child and bail.
-        let _ = child.kill().await;
-        return ProbeOutcome::error(format!(
-            "probe timed out after {}s",
-            PROBE_TIMEOUT.as_secs()
-        ));
-    }
+        if timed_out {
+            // Kill the (possibly still running) child and bail.
+            let _ = child.kill().await;
+            yield ProbeEvent::Done(ProbeOutcome::error(format!(
+                "probe timed out after {}s",
+                PROBE_TIMEOUT.as_secs()
+            )));
+            return;
+        }
 
-    // The pumps close their senders on EOF, so by here the child has exited.
-    let status = match child.wait().await {
-        Ok(s) => s,
-        Err(e) => return ProbeOutcome::error(format!("yt-dlp probe wait error: {e}")),
-    };
+        // The pumps close their senders on EOF, so by here the child has exited.
+        let status = match child.wait().await {
+            Ok(s) => s,
+            Err(e) => {
+                yield ProbeEvent::Done(ProbeOutcome::error(format!(
+                    "yt-dlp probe wait error: {e}"
+                )));
+                return;
+            }
+        };
 
-    let success = status.success();
-    // If we got entries or a single video, the probe succeeded for our
-    // purposes even if yt-dlp printed a trailing WARNING; otherwise surface
-    // the captured error (or a generic exit-status message).
-    if !entries.is_empty() || single.is_some() {
-        return ProbeOutcome {
+        let success = status.success();
+        // If we got entries or a single video, the probe succeeded for our
+        // purposes even if yt-dlp printed a trailing WARNING; otherwise
+        // surface the captured error (or a generic exit-status message).
+        if !entries.is_empty() || single.is_some() {
+            yield ProbeEvent::Done(ProbeOutcome {
+                entries,
+                single,
+                success: true,
+                error: None,
+            });
+            return;
+        }
+        yield ProbeEvent::Done(ProbeOutcome {
             entries,
             single,
-            success: true,
-            error: None,
-        };
-    }
-    ProbeOutcome {
-        entries,
-        single,
-        success,
-        error: err_msg.or_else(|| {
-            if success {
-                None
-            } else {
-                Some(format!(
-                    "yt-dlp probe failed{}",
-                    status
-                        .code()
-                        .map(|c| format!(" (status {c})"))
-                        .unwrap_or_default()
-                ))
-            }
-        }),
+            success,
+            error: err_msg.or_else(|| {
+                if success {
+                    None
+                } else {
+                    Some(format!(
+                        "yt-dlp probe failed{}",
+                        status
+                            .code()
+                            .map(|c| format!(" (status {c})"))
+                            .unwrap_or_default()
+                    ))
+                }
+            }),
+        });
     }
 }
 

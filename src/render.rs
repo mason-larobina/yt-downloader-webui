@@ -5,16 +5,16 @@ use crate::parse::FlatEntry;
 use crate::state::{ItemStatus, Queue, QueueItem};
 use crate::library::LibraryFile;
 
-/// JSON shape embedded in each approval checkbox `value`, so POST /approve can
-/// reconstruct per-video items (with titles) without any server-side stash.
-/// The whole blob is HTML-escaped into the attribute; the browser decodes it
-/// back to this JSON on form submit.
+/// JSON shape embedded in each probe-result card checkbox `value`, so POST
+/// /confirm can reconstruct per-video items (with titles + thumbnail URLs)
+/// without any server-side stash. The whole blob is HTML-escaped into the
+/// attribute; the browser decodes it back to this JSON on form submit.
 #[derive(serde::Serialize)]
 struct ApprovalEntry<'a> {
     url: &'a str,
     title: Option<&'a str>,
     duration: Option<f64>,
-    /// Best-thumbnail URL harvested by the probe; POST /approve fetches it into
+    /// Best-thumbnail URL harvested by the probe; POST /confirm fetches it into
     /// the cache and attaches the resulting filename to the enqueued item.
     thumbnail: Option<&'a str>,
 }
@@ -436,65 +436,129 @@ fn render_library_row(f: &LibraryFile) -> String {
     )
 }
 
-// ----------------------------- #approval ----------------------------------
+// ----------------------------- header / probe ------------------------------
 
-/// Render the approval list for a probed playlist: a form whose checkboxes
-/// (checked by default) carry each entry's url/title/duration as an
-/// HTML-escaped JSON `value`. POST /approve deserialises the checked values
-/// and enqueues one per-video `Video` item each. `note` is an optional line
-/// shown above the list (e.g. "1 single-video URL queued directly" or a
-/// per-URL probe error).
+/// Render the normal header input form (a single URL text field + Add
+/// button). Returned by GET /header and POST /confirm (to restore the header
+/// after a confirm/discard), and by POST /download when the submitted URL is
+/// empty. `error` is an optional inline message shown beneath the field
+/// (e.g. "paste a URL" or "select at least one video").
 ///
-/// Never persisted: this fragment is a transient request-handler response.
-/// Only the approved per-video items that result from POST /approve reach the
-/// queue (and thus the state dir).
-pub fn render_approval(title: Option<&str>, entries: &[FlatEntry], note: Option<&str>) -> String {
+/// The form POSTs to /download, swapping the response (a probe-area shell)
+/// into `#header-input` -- i.e. on submit the input is replaced by the
+/// pending probe result area.
+pub fn render_header_input(error: Option<&str>) -> String {
+    let err_html = match error {
+        Some(m) if !m.is_empty() => {
+            format!(r#"<span class="header-err">{}</span>"#, esc(m))
+        }
+        _ => String::new(),
+    };
+    format!(
+        r##"<form class="submit" hx-post="/download" hx-target="#header-input" hx-swap="innerHTML" hx-disabled-elt="#dl-btn"><input type="text" name="url" placeholder="paste a URL" autocomplete="off" autofocus><button type="submit" id="dl-btn">Add</button></form>{err}"##,
+        err = err_html,
+    )
+}
+
+/// Render the pending probe result area: a shell with its own SSE connection
+/// (`sse-connect="/probe?url=…"`) that streams probe log lines into
+/// `#probe-stream` (appended) and swaps the final result cards into
+/// `#probe-cards` on the `result` event, then closes the stream
+/// (`sse-close="result"`). A `cancel` button restores the header input
+/// immediately (dropping the probe stream kills the yt-dlp probe process via
+/// `kill_on_drop`).
+///
+/// The probe URL is percent-encoded for the query string with
+/// [`url_encode_path`] (encodes everything except RFC 3986 unreserved chars,
+/// so `&`, `=`, `#`, `?`, `"` etc. cannot break out of the `url=` param or
+/// the double-quoted attribute).
+pub fn render_probe_area(url: &str) -> String {
+    let enc = url_encode_path(url);
+    format!(
+        r##"<div id="probe-area" class="probe-area" sse-connect="/probe?url={enc}" sse-close="result"><div class="probe-head"><span class="probe-status">probing&hellip;</span><button type="button" class="probe-cancel" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">cancel</button></div><div id="probe-stream" class="probe-stream" sse-swap="log" hx-swap="beforeend"></div><div id="probe-cards" class="probe-cards" sse-swap="result" hx-swap="innerHTML"></div></div>"##,
+        enc = enc,
+    )
+}
+
+/// Render the probe result cards (swapped into `#probe-cards` by the `result`
+/// SSE event). On success this is a form of one or more cards -- each a
+/// thumbnail + title + a checkbox (checked by default) whose `value` carries
+/// the entry's `{url,title,duration,thumbnail}` as HTML-escaped JSON -- plus a
+/// single Confirm / Cancel pair. Confirm (POST /confirm) enqueues the checked
+/// entries and restores the header; Cancel restores the header without
+/// enqueuing. On failure (no entries, no single video) an error line + Done
+/// button is shown instead.
+///
+/// `submitted_url` is the original URL the user pasted; for a single-video
+/// probe the entry's downloadable URL *is* the submitted URL (the probe
+/// dict's `url` is a media URL, not a watch URL), so it is carried in the
+/// card's checkbox value rather than the dict's `url`.
+pub fn render_probe_result(
+    submitted_url: &str,
+    entries: &[FlatEntry],
+    single: Option<&FlatEntry>,
+    error: Option<&str>,
+) -> String {
+    // Build the list of (url, title, duration, thumbnail) to confirm.
+    let cards: Vec<ApprovalEntry> = if !entries.is_empty() {
+        entries
+            .iter()
+            .map(|e| ApprovalEntry {
+                url: e.url.as_deref().unwrap_or(""),
+                title: e.title.as_deref(),
+                duration: e.duration,
+                thumbnail: e.thumbnail.as_deref(),
+            })
+            .collect()
+    } else if let Some(sv) = single {
+        vec![ApprovalEntry {
+            url: submitted_url,
+            title: sv.title.as_deref(),
+            duration: sv.duration,
+            thumbnail: sv.thumbnail.as_deref(),
+        }]
+    } else {
+        let msg = error
+            .map(str::to_string)
+            .unwrap_or_else(|| "no videos extracted".to_string());
+        return format!(
+            r##"<div class="probe-error"><span class="err">{msg}</span><button type="button" class="probe-done" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Done</button></div>"##,
+            msg = esc(&msg),
+        );
+    };
+
     let mut rows = String::new();
-    for (i, e) in entries.iter().enumerate() {
-        let url = e.url.as_deref().unwrap_or("");
-        let blob = serde_json::to_string(&ApprovalEntry {
-            url,
-            title: e.title.as_deref(),
-            duration: e.duration,
-            thumbnail: e.thumbnail.as_deref(),
-        })
-        .unwrap_or_default();
+    for (i, e) in cards.iter().enumerate() {
+        let blob = serde_json::to_string(e).unwrap_or_default();
         let value = esc(&blob);
-        let label = esc(e.title.as_deref().unwrap_or(url));
+        let label = esc(e.title.unwrap_or(e.url));
         let dur = human_duration(e.duration);
         let idx = i + 1;
+        let thumb_html = match e.thumbnail {
+            Some(t) => format!(
+                r##"<img class="probe-thumb" src="{t}" alt="" loading="lazy" referrerpolicy="no-referrer">"##,
+                t = esc(t),
+            ),
+            None => r#"<div class="probe-thumb probe-thumb-placeholder"></div>"#.to_string(),
+        };
         let dur_html = if dur.is_empty() {
             String::new()
         } else {
-            format!(r#" <span class="dur">{dur}</span>"#)
+            format!(r#"<div class="probe-card-sub"><span class="dur">{dur}</span></div>"#)
         };
         rows.push_str(&format!(
-            r##"<div class="arow"><label><input type="checkbox" name="entry" value="{value}" checked> <span class="idx">{idx}.</span> <span class="title">{label}</span>{dur_html}</label></div>"##,
+            r##"<div class="probe-card"><label class="probe-check"><input type="checkbox" name="entry" value="{value}" checked></label>{thumb}<div class="probe-card-meta"><div class="probe-card-title">{idx}. {label}</div>{dur_html}</div></div>"##,
             value = value,
+            thumb = thumb_html,
             idx = idx,
             label = label,
             dur_html = dur_html,
         ));
     }
 
-    let n = entries.len();
-    let head = match title {
-        Some(t) => format!(
-            r##"<div class="ahead">playlist: {t} ({n} videos)</div>"##,
-            t = esc(t),
-            n = n
-        ),
-        None => format!(r##"<div class="ahead">playlist ({n} videos)</div>"##, n = n),
-    };
-    let note_html = match note {
-        Some(s) if !s.is_empty() => format!(r##"<div class="anote">{}</div>"##, esc(s)),
-        _ => String::new(),
-    };
-
+    let n = cards.len();
     format!(
-        r##"<form class="approvelist" hx-post="/approve" hx-target="#approve" hx-swap="innerHTML">{head}{note_html}<div class="arows">{rows}</div><div class="actions"><button type="submit">Download selected (<span class="sel-count">{n}</span>)</button></div></form>"##,
-        head = head,
-        note_html = note_html,
+        r##"<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML"><div class="probe-cards-list">{rows}</div><div class="probe-actions"><button type="submit">Confirm (<span class="sel-count">{n}</span>)</button><button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button></div></form>"##,
         rows = rows,
         n = n,
     )
@@ -518,13 +582,14 @@ pub fn render_library_scan(dir: &Path) -> String {
 }
 
 #[cfg(test)]
-mod approval_tests {
+mod probe_result_tests {
     use super::*;
     use crate::parse::FlatEntry;
 
-    /// The checkbox `value` is an HTML-escaped JSON blob that POST /approve
-    /// must be able to deserialise back into `{url,title,duration}`. This
-    /// pins the contract between `render_approval` and `server::ApproveEntry`.
+    /// The checkbox `value` is an HTML-escaped JSON blob that POST /confirm
+    /// must be able to deserialise back into `{url,title,duration,thumbnail}`.
+    /// This pins the contract between `render_probe_result` and
+    /// `server::ApproveEntry`.
     #[derive(serde::Deserialize)]
     struct ApproveEntry {
         url: String,
@@ -533,64 +598,72 @@ mod approval_tests {
         thumbnail: Option<String>,
     }
 
-    #[test]
-    fn approval_checkbox_values_round_trip() {
-        let entries = vec![
-            FlatEntry {
-                _type: Some("url".into()),
-                url: Some("https://www.youtube.com/watch?v=aaa".into()),
-                title: Some("First & <second> \"quoted\"".into()),
-                duration: Some(3623.0),
-                thumbnail: Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg".into()),
-                ..Default::default()
-            },
-            FlatEntry {
-                _type: Some("url".into()),
-                url: Some("https://www.youtube.com/watch?v=bbb".into()),
-                title: None,
-                duration: None,
-                thumbnail: None,
-                ..Default::default()
-            },
-        ];
-        let html = render_approval(Some("Chill"), &entries, Some("1 single-video URL queued directly"));
+    fn entry(
+        url: &str,
+        title: Option<&str>,
+        duration: Option<f64>,
+        thumbnail: Option<&str>,
+    ) -> FlatEntry {
+        FlatEntry {
+            _type: Some("url".into()),
+            url: Some(url.into()),
+            title: title.map(str::to_string),
+            duration,
+            thumbnail: thumbnail.map(str::to_string),
+            ..Default::default()
+        }
+    }
 
-        // Form posts to /approve into #approve.
-        assert!(html.contains(r##"hx-post="/approve""##));
-        assert!(html.contains(r##"hx-target="#approve""##));
-        assert!(html.contains("playlist: Chill (2 videos)"));
-        assert!(html.contains("1 single-video URL queued directly"));
-
-        // Extract every checkbox value, HTML-unescape (as a browser would),
-        // and confirm each deserialises with title/duration intact -- including
-        // the entry whose title contains HTML-special chars (& < > ").
-        //
-        // `esc` turns every `"` in the JSON into `&quot;`, so the attribute
-        // value contains no raw `"`; it runs from `value="` to the next `"`.
+    /// Extract every checkbox `value` attribute (HTML-escaped JSON) from the
+    /// rendered fragment, as a browser would surface it on form submit.
+    fn checkbox_values(html: &str) -> Vec<String> {
         let needle = r#"name="entry" value=""#;
-        let values: Vec<String> = html
-            .match_indices(needle)
+        html.match_indices(needle)
             .map(|(i, _)| {
                 let start = i + needle.len();
                 let rest = &html[start..];
                 let end = rest.find('"').unwrap_or(rest.len());
                 rest[..end].to_string()
             })
-            .collect();
-        assert_eq!(values.len(), 2, "expected 2 checkboxes, got {values:?}");
+            .collect()
+    }
 
-        // Browser decodes HTML entities in the attribute value before submit.
-        fn unescape(s: &str) -> String {
-            s.replace("&quot;", "\"")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&#39;", "'")
-        }
+    fn unescape(s: &str) -> String {
+        s.replace("&quot;", "\"")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#39;", "'")
+    }
+
+    /// A playlist probe yields one card per entry; the form posts to
+    /// /confirm into `#header-input`; checkbox values round-trip with
+    /// title/duration/thumbnail intact (including HTML-special title chars).
+    #[test]
+    fn playlist_result_round_trips() {
+        let entries = vec![
+            entry(
+                "https://www.youtube.com/watch?v=aaa",
+                Some("First & <second> \"quoted\""),
+                Some(3623.0),
+                Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg"),
+            ),
+            entry("https://www.youtube.com/watch?v=bbb", None, None, None),
+        ];
+        let html = render_probe_result("https://ignored", &entries, None, None);
+
+        assert!(html.contains(r##"hx-post="/confirm""##), "posts to /confirm");
+        assert!(html.contains(r##"hx-target="#header-input""##));
+        assert!(html.contains(r##"hx-get="/header""##), "cancel restores header");
+        assert!(html.contains("Confirm ("));
+
+        let values = checkbox_values(&html);
+        assert_eq!(values.len(), 2, "expected 2 cards, got {values:?}");
+
         let first: ApproveEntry =
             serde_json::from_str(&unescape(&values[0])).expect("first value decodes");
         assert_eq!(first.url, "https://www.youtube.com/watch?v=aaa");
-        assert_eq!(first.title.as_deref(), Some(r#"First & <second> "quoted""#));
+        assert_eq!(first.title.as_deref(), Some("First & <second> \"quoted\""));
         assert_eq!(first.duration, Some(3623.0));
         assert_eq!(
             first.thumbnail.as_deref(),
@@ -603,6 +676,77 @@ mod approval_tests {
         assert!(second.title.is_none());
         assert!(second.duration.is_none());
         assert!(second.thumbnail.is_none());
+    }
+
+    /// A single-video probe yields exactly one card whose checkbox `url` is
+    /// the *original submitted URL* (not the probe dict's media `url`).
+    #[test]
+    fn single_video_result_uses_submitted_url() {
+        let single = entry(
+            "https://media.example/v/aaa", // media URL -- must NOT be used
+            Some("Some Video"),
+            Some(99.0),
+            Some("https://i.ytimg.com/vi/aaa/hqdefault.jpg"),
+        );
+        let html = render_probe_result(
+            "https://www.youtube.com/watch?v=aaa",
+            &[],
+            Some(&single),
+            None,
+        );
+        let values = checkbox_values(&html);
+        assert_eq!(values.len(), 1, "single video -> one card");
+        let e: ApproveEntry =
+            serde_json::from_str(&unescape(&values[0])).expect("decodes");
+        assert_eq!(e.url, "https://www.youtube.com/watch?v=aaa");
+        assert_eq!(e.title.as_deref(), Some("Some Video"));
+        assert_eq!(e.duration, Some(99.0));
+    }
+
+    /// A failed probe (no entries, no single) renders an error line + a Done
+    /// button that restores the header -- no form, no checkboxes.
+    #[test]
+    fn error_result_shows_done_button() {
+        let html = render_probe_result("https://x", &[], None, Some("Video unavailable"));
+        assert!(html.contains(r#"class="err""#));
+        assert!(html.contains("Video unavailable"));
+        assert!(html.contains(r##"hx-get="/header""##));
+        assert!(html.contains(">Done<"));
+        assert!(html.contains("probe-error"));
+        assert!(!html.contains("name=\"entry\""), "no checkboxes on error");
+    }
+
+    /// The probe-area shell wires its own SSE stream: `sse-connect` carries
+    /// the percent-encoded URL (so `&`/`#`/`?`/`"` can't break the query param
+    /// or the attribute), `sse-swap="log"` appends streaming lines, and
+    /// `sse-swap="result"` + `sse-close="result"` swap+close on the final card.
+    #[test]
+    fn probe_area_shell_streams_and_closes() {
+        let html = render_probe_area("https://www.youtube.com/watch?v=aaa&list=PL1&t=2");
+        assert!(html.contains(r#"sse-connect="/probe?url="#), "sse-connect");
+        // `&`, `=`, `?`, `:`, `/` all encoded in the query value.
+        assert!(html.contains("https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Daaa%26list%3DPL1%26t%3D2"), "url encoded");
+        assert!(html.contains("sse-swap=\"log\""), "sse-swap log");
+        assert!(html.contains("hx-swap=\"beforeend\""), "log lines append");
+        assert!(html.contains("sse-swap=\"result\""), "sse-swap result");
+        assert!(html.contains("sse-close=\"result\""), "stream closes on result");
+        assert!(html.contains("hx-get=\"/header\""), "cancel restores header");
+    }
+
+    /// The header input form POSTs to /download into `#header-input` (so the
+    /// input is replaced by the probe area on submit) and carries an inline
+    /// error when given one.
+    #[test]
+    fn header_input_form_targets_download() {
+        let ok = render_header_input(None);
+        assert!(ok.contains(r##"hx-post="/download""##));
+        assert!(ok.contains(r##"hx-target="#header-input""##));
+        assert!(ok.contains(r#"name="url""#));
+        assert!(!ok.contains("header-err"));
+
+        let err = render_header_input(Some("paste a URL"));
+        assert!(err.contains(r#"class="header-err""#));
+        assert!(err.contains("paste a URL"));
     }
 }
 
@@ -699,3 +843,4 @@ mod card_tests {
         assert!(active.contains("Hello World"), "title present");
     }
 }
+

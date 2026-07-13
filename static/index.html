@@ -11,45 +11,43 @@
 <body hx-ext="sse">
 <div class="app">
 
-  <!-- Left pane: submit + approval -->
-  <aside class="pane pane-left">
-    <header class="topbar">
-      <span class="title">web-dl</span>
-    </header>
-
-    <form class="submit"
-          hx-post="/download" hx-target="#approve" hx-swap="innerHTML"
-          hx-disabled-elt="#dl-btn"
-          hx-on::after-request="if(event.detail.successful) this.querySelector('textarea').value=''">
-      <textarea name="urls" rows="6"
-                placeholder="paste one URL per line&#10;https://..."></textarea>
-      <div class="actions">
-        <button type="submit" id="dl-btn">Download</button>
-      </div>
-    </form>
-
-    <div id="approve" class="approve"></div>
-    <span id="ack" class="ack"></span>
-  </aside>
-
-  <!-- Middle pane: per-video cards -->
-  <main class="pane pane-cards">
-    <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
-      <div class="cards-head"><span class="cards-title">downloads</span></div>
-      <div class="cards-list"><div class="empty">connecting&hellip;</div></div>
+  <!-- Header: title + URL input (or, while probing, the streaming probe area). -->
+  <header class="topbar">
+    <span class="title">web-dl</span>
+    <div id="header-input" class="header-input">
+      <form class="submit"
+            hx-post="/download" hx-target="#header-input" hx-swap="innerHTML"
+            hx-disabled-elt="#dl-btn">
+        <input type="text" name="url" placeholder="paste a URL"
+               autocomplete="off" autofocus>
+        <button type="submit" id="dl-btn">Add</button>
+      </form>
     </div>
-  </main>
+  </header>
 
-  <!-- Right pane: per-video logs -->
-  <aside class="pane pane-logs" id="logs-pane">
-    <div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>
-  </aside>
+  <!-- Main: downloads (cards) + per-video logs. -->
+  <div class="main">
+    <main class="pane pane-cards">
+      <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
+        <div class="cards-head"><span class="cards-title">downloads</span></div>
+        <div class="cards-list"><div class="empty">connecting&hellip;</div></div>
+      </div>
+    </main>
+
+    <aside class="pane pane-logs" id="logs-pane">
+      <div class="lp-empty">click <em>logs</em> on a video to view its yt-dlp output</div>
+    </aside>
+  </div>
 
 </div>
 
 <!-- Floating progress banner (spotify-like). Swapped live by the `status`
      SSE event; hidden via the `idle` class when the queue is empty. -->
 <div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>
+
+<!-- Transient ack toast: cancel/retry/clear/delete actions swap a short
+     confirmation here; auto-cleared after a few seconds. -->
+<div id="ack" class="ack-toast"></div>
 
 <script>
   // Global SSE connection (htmx sse extension picks this up at body level).
@@ -91,18 +89,30 @@
     });
   })();
 
-  // Keep the "Download selected (N)" count in the approval list in sync with
-  // the checked checkboxes (the list is swapped in dynamically by POST
-  // /download, so listen at the document level).
+  // Keep the "Confirm (N)" count in the probe result cards in sync with the
+  // checked checkboxes (the cards are swapped in dynamically by the `result`
+  // SSE event, so listen at the document level).
   (function () {
     document.addEventListener('change', function (e) {
       var box = e.target;
       if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox') return;
-      var form = box.closest('.approvelist');
+      var form = box.closest('.probe-form');
       if (!form) return;
       var n = form.querySelectorAll('input[name="entry"]:checked').length;
       var el = form.querySelector('.sel-count');
       if (el) el.textContent = String(n);
+    });
+  })();
+
+  // Focus the URL input whenever the header is restored to its normal form
+  // (initial load, after a probe is cancelled/confirmed/discarded) so the
+  // user can paste the next URL without reaching for the mouse.
+  (function () {
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var target = e.detail && e.detail.target;
+      if (!target || target.id !== 'header-input') return;
+      var input = target.querySelector('input[name="url"]');
+      if (input) input.focus();
     });
   })();
 </script>

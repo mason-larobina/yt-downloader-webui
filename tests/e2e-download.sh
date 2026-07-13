@@ -2,9 +2,13 @@
 # End-to-end smoke test for the web-dl server.
 #
 # Builds the release binary, starts the server with --cookies-from-browser none
-# (no Firefox in CI/sandbox), opens an SSE listener, POSTs a URL, and verifies
-# the worker drains the queue: progress/status/log/library SSE fragments
-# render, the file lands in the download dir, and the queue item reaches done.
+# (no Firefox in CI/sandbox), then drives the new header flow end-to-end:
+#   1. POST /download -> probe-area shell (sse-connect wired up)
+#   2. GET  /probe?url=... (SSE) -> streams log lines, emits a `result` event
+#      carrying one confirm card (single video)
+#   3. POST /confirm with that card's entry JSON -> enqueues, header restored
+#   4. the global /events SSE stream shows progress/queue/log/library, the
+#      file lands in the download dir, and the queue item reaches done.
 #
 # Run manually after changes to worker.rs / parse.rs / render.rs / server.rs.
 # Fork it to test specific sites or cookie stores.
@@ -41,10 +45,9 @@ echo "=== starting server on 127.0.0.1:$PORT ==="
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-dir "$STATE" \
   --cookies-from-browser none --bind "127.0.0.1:$PORT" \
-  --timeout $((TIMEOUT + 15)) \
+  --timeout $((TIMEOUT + 30)) \
   > "$WORK/server.log" 2>&1 &
 SRV=$!
-# No kill trap: the server self-terminates via --timeout. tmpdir still cleaned.
 wait_for_port() {
   for _ in $(seq 1 50); do
     if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/library" >/dev/null 2>&1; then return 0; fi
@@ -59,14 +62,50 @@ fi
 echo "server pid $SRV"
 cat "$WORK/server.log"
 
-echo "=== opening SSE listener (timeout ${TIMEOUT}s) ==="
-timeout "$TIMEOUT" curl -sN "http://127.0.0.1:$PORT/events" > "$WORK/sse.raw" 2>/dev/null &
+base="http://127.0.0.1:$PORT"
+
+# Drive the probe -> confirm flow, returning the entry JSON that was confirmed
+# (printed by the python helper). Captures the /probe SSE stream to $1.
+probe_and_confirm() {
+  local out="$1"
+  echo "=== GET /probe (SSE) for $URL ==="
+  timeout 90 curl -sN --get "$base/probe" --data-urlencode "url=$URL" > "$out" 2>/dev/null || true
+
+  # Extract the first entry checkbox value (HTML-unescaped JSON) from the
+  # `result` event payload, then POST it to /confirm.
+  local entry
+  entry=$(python3 - "$out" <<'PY'
+import re, sys, html
+data = open(sys.argv[1]).read()
+idx = data.find("event: result")
+if idx < 0:
+    sys.exit("no result event in /probe stream")
+chunk = data[idx:]
+m = re.search(r'^data: (.*)$', chunk, re.M)
+if not m:
+    sys.exit("result event has no data line")
+payload = m.group(1)
+vals = re.findall(r'name="entry" value="([^"]*)"', payload)
+if not vals:
+    sys.exit("result event has no entry checkbox")
+print(html.unescape(vals[0]))
+PY
+  )
+  if [[ -z "$entry" ]]; then
+    echo "FAIL: probe produced no confirmable entry"; cat "$out"; exit 1
+  fi
+  echo "=== POST /confirm (entry=$entry) ==="
+  curl -s -X POST "$base/confirm" --data-urlencode "entry=$entry"
+  echo " <- header restored"
+}
+
+echo "=== opening global SSE listener (timeout ${TIMEOUT}s) ==="
+timeout "$TIMEOUT" curl -sN "$base/events" > "$WORK/sse.raw" 2>/dev/null &
 SSE=$!
 
-echo "=== POST /download ==="
+# Give the listener a moment to connect before we enqueue.
 sleep 0.5
-curl -s -X POST "http://127.0.0.1:$PORT/download" --data-urlencode "urls=$URL"
-echo " <- ack"
+probe_and_confirm "$WORK/probe.raw"
 
 wait "$SSE" || true
 
@@ -75,7 +114,10 @@ wait "$SSE" || true
 wait "$SRV" 2>/dev/null || true
 
 echo
-echo "=== event counts ==="
+echo "=== /probe event counts ==="
+grep -o '^event: [a-z]*' "$WORK/probe.raw" | sort | uniq -c
+echo
+echo "=== /events event counts ==="
 grep -o '^event: [a-z]*' "$WORK/sse.raw" | sort | uniq -c
 echo
 echo "=== final queue event (expect 'card done') ==="
@@ -99,10 +141,16 @@ cat "$WORK/server.log"
 echo
 echo "=== assertions ==="
 fail=0
-if ! grep -q 'card done' "$WORK/sse.raw"; then
-  echo "FAIL: no 'card done' in SSE stream"; fail=1
+if ! grep -q '^event: log' "$WORK/probe.raw"; then
+  echo "FAIL: /probe streamed no log lines"; fail=1
 fi
-if ! awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw" | grep -q 'status idle'; then
+if ! grep -q '^event: result' "$WORK/probe.raw"; then
+  echo "FAIL: /probe emitted no result event"; fail=1
+fi
+if ! grep -q 'card done' "$WORK/sse.raw"; then
+  echo "FAIL: no 'card done' in /events stream"; fail=1
+fi
+if ! awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw" | grep -q 'banner idle'; then
   echo "FAIL: final status is not idle"; fail=1
 fi
 if [[ -z "$(find "$DL" -type f ! -name '.*' -print -quit)" ]]; then

@@ -1,4 +1,5 @@
 //! Axum router, route handlers, and the SSE stream.
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use async_stream::stream;
@@ -7,11 +8,11 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use serde::Deserialize;
 
 use crate::events::Event;
 use crate::library;
-use crate::parse::FlatEntry;
 use crate::render;
 use crate::state::{AppState, ItemStatus};
 use crate::worker;
@@ -24,7 +25,9 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/static/htmx-ext-sse.js", axum::routing::get(static_sse))
         .route("/static/app.css", axum::routing::get(static_css))
         .route("/download", axum::routing::post(post_download))
-        .route("/approve", axum::routing::post(post_approve))
+        .route("/probe", axum::routing::get(get_probe))
+        .route("/header", axum::routing::get(get_header))
+        .route("/confirm", axum::routing::post(post_confirm))
         .route("/cancel/{id}", axum::routing::post(post_cancel))
         .route("/retry/{id}", axum::routing::post(post_retry))
         .route("/clear", axum::routing::post(post_clear))
@@ -85,146 +88,99 @@ fn bytes_response(data: &'static [u8], content_type: &str) -> Response {
 
 #[derive(Deserialize)]
 pub struct DownloadForm {
-    pub urls: String,
+    pub url: String,
 }
 
-/// One decoded approval checkbox value (see `render::render_approval`). The
-/// checkbox `value` is the JSON serialisation of this; POST /approve gets the
-/// browser-decoded JSON strings back as repeated `entry` form fields.
+/// One decoded probe-card checkbox value (see `render::render_probe_result`).
+/// The checkbox `value` is the JSON serialisation of this; POST /confirm gets
+/// the browser-decoded JSON strings back as repeated `entry` form fields.
 #[derive(Deserialize)]
 struct ApproveEntry {
     url: String,
     title: Option<String>,
     duration: Option<f64>,
-    /// Best-thumbnail URL harvested by the probe; POST /approve fetches it
+    /// Best-thumbnail URL harvested by the probe; POST /confirm fetches it
     /// into the cache and attaches the resulting filename to the item.
     thumbnail: Option<String>,
 }
 
-/// POST /download -- probe each pasted URL synchronously (fast: `--flat-playlist
-/// -j`, no download), then either enqueue single videos directly or return a
-/// playlist's entries as an approval list. The probe runs concurrently with
-/// the worker's downloads; only per-video items are ever persisted.
+/// POST /download -- the header form's submit target. Validates that a URL
+/// was pasted and returns the probe-area shell (a fragment with its own
+/// `sse-connect="/probe?url=…"` swapped into `#header-input`). The actual
+/// probing + streaming happens on the GET /probe SSE stream; this handler
+/// never blocks on yt-dlp and never enqueues anything.
 ///
-/// Returns a fragment swapped into `#approve`:
-/// - single video(s) -> `<span class="ack">queued N download(s)</span>` (the
-///   items are already in the queue);
-/// - playlist -> `render::render_approval(...)` (a form of checkboxes);
-/// - mixed -> approval list with a note naming the directly-queued count and
-///   any per-URL probe errors;
-/// - all failed / empty -> `<span class="err">...</span>`.
+/// On an empty URL it re-renders the input form with an inline error.
 async fn post_download(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Form(form): Form<DownloadForm>,
 ) -> String {
-    let urls: Vec<String> = form
-        .urls
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-
-    if urls.is_empty() {
-        return r#"<span class="err">paste at least one URL</span>"#.to_string();
+    let url = form.url.trim();
+    if url.is_empty() {
+        return render::render_header_input(Some("paste a URL"));
     }
-
-    let mut direct: u64 = 0;
-    let mut entries: Vec<FlatEntry> = Vec::new();
-    let mut playlist_title: Option<String> = None;
-    let mut errors: Vec<(String, String)> = Vec::new();
-    // (item id, thumbnail URL) for directly-enqueued single videos; fetched
-    // in the background after the response is returned.
-    let mut direct_thumbs: Vec<(u64, String)> = Vec::new();
-
-    for u in &urls {
-        let outcome = worker::probe(&state, u).await;
-        if !outcome.entries.is_empty() {
-            if playlist_title.is_none() {
-                playlist_title = outcome
-                    .entries
-                    .first()
-                    .and_then(|e| e.playlist_title.clone());
-            }
-            entries.extend(outcome.entries);
-        } else if let Some(sv) = outcome.single {
-            let title = sv.title.clone();
-            let duration = sv.duration;
-            let thumb = sv.thumbnail.clone();
-            let id = {
-                let mut q = state.queue.lock().await;
-                q.enqueue(u.clone(), title, duration)
-            };
-            direct += 1;
-            if let Some(t) = thumb {
-                direct_thumbs.push((id, t));
-            }
-        } else {
-            errors.push((
-                u.clone(),
-                outcome
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "no videos extracted".to_string()),
-            ));
-        }
-    }
-
-    // Anything directly enqueued needs the worker woken + a queue swap + persist.
-    if direct > 0 {
-        state.notify.notify_one();
-        emit_queue_status(&state).await;
-        state.persist().await;
-    }
-
-    // Fetch single-video thumbnails in the background (best-effort); each
-    // success emits a `queue` swap so the image appears as it lands. The
-    // response is already returned to the caller below.
-    if !direct_thumbs.is_empty() {
-        spawn_thumbnail_fetches(state.clone(), direct_thumbs);
-    }
-
-    if !entries.is_empty() {
-        let note = {
-            let mut parts: Vec<String> = Vec::new();
-            if direct > 0 {
-                parts.push(format!(
-                    "{direct} single-video URL{} queued directly",
-                    if direct == 1 { "" } else { "s" }
-                ));
-            }
-            for (u, m) in &errors {
-                parts.push(format!("{}: {m}", u));
-            }
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join("; "))
-            }
-        };
-        return render::render_approval(playlist_title.as_deref(), &entries, note.as_deref());
-    }
-
-    if direct > 0 {
-        // No ack fragment: the live queue/progress state is shown in the
-        // floating banner (driven by the `status` SSE event).
-        return String::new();
-    }
-
-    // Nothing enqueued, no playlist: surface the first error.
-    let msg = errors
-        .first()
-        .map(|(_, m)| m.clone())
-        .unwrap_or_else(|| "no videos extracted".to_string());
-    format!(r#"<span class="err">{}</span>"#, render::esc(&msg))
+    render::render_probe_area(url)
 }
 
-/// POST /approve -- enqueue the per-video items the user ticked in an approval
-/// list. Each checked checkbox carried a JSON `ApproveEntry` as its value;
-/// we parse the raw urlencoded body ourselves with `form_urlencoded` (axum's
-/// default `Form`/`serde_urlencoded` does not collapse repeated `entry` keys
-/// into a `Vec`). Returns an ack fragment (into `#approve`), replacing the
-/// approval list.
-async fn post_approve(
+/// GET /header -- return the normal header input form (used by cancel/done
+/// buttons in the probe area to restore the header into `#header-input`).
+async fn get_header() -> String {
+    render::render_header_input(None)
+}
+
+// ------------------------------ /probe -------------------------------------
+
+/// Query params for GET /probe.
+#[derive(Deserialize)]
+struct ProbeQuery {
+    pub url: String,
+}
+
+/// GET /probe -- the per-probe SSE stream that drives the header's pending
+/// probe result area. Streams each yt-dlp output line as a `log` event
+/// (appended into `#probe-stream`), then emits a single `result` event
+/// carrying the confirm cards (or an error + Done button) into
+/// `#probe-cards`, and closes. The probe runs inline in the stream so that a
+/// client disconnect (cancel / navigate away) drops the stream and kills the
+/// yt-dlp child via `kill_on_drop`.
+async fn get_probe(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ProbeQuery>,
+) -> Response {
+    let url = q.url;
+    let probe = worker::probe_stream(state.clone(), url.clone());
+    let s = stream! {
+        let mut probe = Box::pin(probe);
+        while let Some(ev) = probe.next().await {
+            match ev {
+                worker::ProbeEvent::Log(line) => {
+                    yield Ok::<SseEvent, Infallible>(
+                        SseEvent::default().event("log").data(render::render_log_line(&line)),
+                    );
+                }
+                worker::ProbeEvent::Done(outcome) => {
+                    let frag = render::render_probe_result(
+                        &url,
+                        &outcome.entries,
+                        outcome.single.as_ref(),
+                        outcome.error.as_deref(),
+                    );
+                    yield Ok(SseEvent::default().event("result").data(frag));
+                    return;
+                }
+            }
+        }
+    };
+    Sse::new(s).keep_alive(KeepAlive::default()).into_response()
+}
+
+/// POST /confirm -- enqueue the per-video items the user ticked on the probe
+/// result cards. Each checked checkbox carried a JSON `ApproveEntry` as its
+/// value; we parse the raw urlencoded body ourselves with `form_urlencoded`
+/// (axum's default `Form`/`serde_urlencoded` does not collapse repeated
+/// `entry` keys into a `Vec`). Returns the normal header input form (swapped
+/// into `#header-input`), restoring the header for the next URL.
+async fn post_confirm(
     State(state): State<Arc<AppState>>,
     body: Bytes,
 ) -> String {
@@ -234,7 +190,7 @@ async fn post_approve(
         .collect();
 
     if entries.is_empty() {
-        return r#"<span class="err">select at least one video</span>"#.to_string();
+        return render::render_header_input(Some("select at least one video"));
     }
 
     // (item id, thumbnail URL) pairs to fetch in the background.
@@ -251,7 +207,7 @@ async fn post_approve(
                 }
                 Err(_) => {
                     // Skip a malformed value rather than failing the whole
-                    // batch; the user can re-approve.
+                    // batch; the user can re-probe.
                 }
             }
         }
@@ -264,9 +220,7 @@ async fn post_approve(
         spawn_thumbnail_fetches(state.clone(), thumbs);
     }
 
-    // No ack fragment: the live queue/progress state is shown in the
-    // floating banner (driven by the `status` SSE event).
-    String::new()
+    render::render_header_input(None)
 }
 
 // ------------------------------ /cancel/:id --------------------------------
@@ -277,8 +231,8 @@ async fn post_approve(
 /// fetch failures are logged at debug and otherwise ignored (the worker's
 /// ffmpeg fallback may still generate a thumb after the download).
 ///
-/// Used by POST /download (single videos) and POST /approve (playlist
-/// entries) so neither handler blocks on thumbnail fetches.
+/// Used by POST /confirm (both single-video and playlist entries) so the
+/// handler never blocks on thumbnail fetches.
 fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
     tokio::spawn(async move {
         let mut set = tokio::task::JoinSet::new();

@@ -69,7 +69,27 @@ echo "=== launch #1, queue a download, SIGTERM mid-flight ==="
 # Server #1 is deliberately NOT given --timeout: the whole point of this test
 # is that SIGTERM mid-flight exercises the graceful-shutdown path.
 SRV1=$(start_server 1)
-curl -s -X POST "http://127.0.0.1:$PORT/download" --data-urlencode "urls=$URL" >/dev/null
+# Drive the new header flow: probe the URL via GET /probe (SSE), then confirm
+# the resulting card to actually enqueue it (POST /download only returns the
+# probe-area shell; it does not enqueue).
+timeout 90 curl -sN --get "http://127.0.0.1:$PORT/probe" --data-urlencode "url=$URL" > "$WORK/probe.raw" 2>/dev/null || true
+ENTRY=$(python3 - "$WORK/probe.raw" <<'PY'
+import re, sys, html
+data = open(sys.argv[1]).read()
+idx = data.find("event: result")
+if idx < 0:
+    sys.exit("no result event")
+m = re.search(r'^data: (.*)$', data[idx:], re.M)
+if not m:
+    sys.exit("no data line")
+vals = re.findall(r'name="entry" value="([^"]*)"', m.group(1))
+if not vals:
+    sys.exit("no entry checkbox")
+print(html.unescape(vals[0]))
+PY
+)
+[[ -n "$ENTRY" ]] || { echo "FAIL: probe produced no entry"; cat "$WORK/probe.raw"; exit 1; }
+curl -s -X POST "http://127.0.0.1:$PORT/confirm" --data-urlencode "entry=$ENTRY" >/dev/null
 echo "queued; waiting 2s for it to go active..."
 sleep 2
 echo "=== SIGTERM mid-download ==="
