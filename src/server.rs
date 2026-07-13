@@ -217,8 +217,9 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
         for raw in &entries {
             match serde_json::from_str::<render::ApprovalEntry>(raw) {
                 Ok(e) => {
-                    let id = q.enqueue(e.url, e.title, e.duration);
-                    if let Some(t) = e.thumbnail {
+                    if let Some(id) = q.enqueue(e.url, e.title, e.duration)
+                        && let Some(t) = e.thumbnail
+                    {
                         thumbs.push((id, t));
                     }
                 }

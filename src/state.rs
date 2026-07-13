@@ -95,18 +95,39 @@ impl Queue {
     /// downloads it directly (no probe). `title`/`duration` are borrowed from
     /// the synchronous probe in `POST /download` (a playlist entry's `url` is
     /// already the full watch URL; a single video keeps the original URL).
-    /// Returns the new item's id.
+    /// Returns the new item's id, or `None` if the URL was skipped because a
+    /// previously-downloaded item with the **exact same URL** already exists
+    /// in the queue -- re-downloading a playlist should not create duplicate
+    /// rows / files for videos already on disk.
     ///
     /// Playlists are never persisted: their expansion happens in the request
     /// handler and is presented for approval; only the approved per-video
     /// items reach the queue (and thus the state dir).
-    pub fn enqueue(&mut self, url: String, title: Option<String>, duration: Option<f64>) -> u64 {
+    pub fn enqueue(
+        &mut self,
+        url: String,
+        title: Option<String>,
+        duration: Option<f64>,
+    ) -> Option<u64> {
+        // Dedupe against successful downloads: if a Done item with the exact
+        // same URL already exists, the video is already on disk -- skip it so
+        // re-downloading a playlist doesn't create duplicate rows / files.
+        // Failed/Cancelled items are intentionally NOT matched: those did not
+        // produce a file and should be retried.
+        if self
+            .items
+            .iter()
+            .any(|i| i.url == url && i.status == ItemStatus::Done)
+        {
+            tracing::info!("skipping already-downloaded URL: {url}");
+            return None;
+        }
         let id = self.alloc_id();
         let mut item = QueueItem::new(id, url);
         item.title = title;
         item.duration = duration;
         self.items.push(item);
-        id
+        Some(id)
     }
 
     /// Find an item by id.
@@ -309,5 +330,75 @@ impl Progress {
             return Some((downloaded / total * 100.0).clamp(0.0, 100.0));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mark_done(item: &mut QueueItem) {
+        item.status = ItemStatus::Done;
+    }
+
+    /// Enqueueing a fresh URL returns a new id and appends a Pending item.
+    #[test]
+    fn enqueue_fresh_url() {
+        let mut q = Queue::new();
+        let id = q.enqueue("https://example/v/1".to_string(), None, None);
+        assert_eq!(id, Some(1));
+        assert_eq!(q.items.len(), 1);
+        assert_eq!(q.items[0].status, ItemStatus::Pending);
+    }
+
+    /// Re-enqueueing a URL whose previous item is Done returns None and does
+    /// not append a row. This is the playlist-redownload dedupe regression:
+    /// the same video must not be queued twice once it is already on disk.
+    #[test]
+    fn enqueue_skips_already_done() {
+        let mut q = Queue::new();
+        let id = q.enqueue("https://example/v/1".to_string(), None, None);
+        assert_eq!(id, Some(1));
+        mark_done(q.get_mut(1).unwrap());
+        // Re-submit the exact same URL.
+        let again = q.enqueue("https://example/v/1".to_string(), None, None);
+        assert_eq!(again, None);
+        assert_eq!(q.items.len(), 1, "no duplicate row created");
+    }
+
+    /// A Failed (or Cancelled) previous attempt is NOT a successful download,
+    /// so re-enqueueing the same URL must still create a fresh pending item.
+    #[test]
+    fn enqueue_allows_retry_after_failure() {
+        let mut q = Queue::new();
+        let _ = q.enqueue("https://example/v/1".to_string(), None, None);
+        q.get_mut(1).unwrap().status = ItemStatus::Failed;
+        let again = q.enqueue("https://example/v/1".to_string(), None, None);
+        assert_eq!(again, Some(2));
+        assert_eq!(q.items.len(), 2);
+    }
+
+    /// Dedupe is exact-URL: a different URL is enqueued even when a Done
+    /// item exists for the original.
+    #[test]
+    fn enqueue_dedupe_is_exact_url() {
+        let mut q = Queue::new();
+        let _ = q.enqueue("https://example/v/1".to_string(), None, None);
+        mark_done(q.get_mut(1).unwrap());
+        let other = q.enqueue("https://example/v/2".to_string(), None, None);
+        assert_eq!(other, Some(2));
+        assert_eq!(q.items.len(), 2);
+    }
+
+    /// A pending (in-flight) duplicate is not treated as a success: the user
+    /// may legitimately re-submit a playlist; only Done gates the skip.
+    #[test]
+    fn enqueue_pending_is_not_skipped() {
+        let mut q = Queue::new();
+        let _ = q.enqueue("https://example/v/1".to_string(), None, None);
+        // Still Pending.
+        let again = q.enqueue("https://example/v/1".to_string(), None, None);
+        assert_eq!(again, Some(2));
+        assert_eq!(q.items.len(), 2);
     }
 }
