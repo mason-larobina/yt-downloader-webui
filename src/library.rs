@@ -2,16 +2,16 @@
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
-use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::render::{esc, render_library_scan};
+use crate::render::{esc, render_ack, render_library_scan};
 use crate::state::AppState;
 
 /// A regular file discovered in the download directory.
@@ -81,7 +81,9 @@ pub fn resolve_safe(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// GET /library -- render the file list as an HTML fragment.
-pub async fn get_library(axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>) -> String {
+pub async fn get_library(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
+) -> String {
     render_library_scan(&state.cfg.download_dir)
 }
 
@@ -161,10 +163,7 @@ async fn serve_file(dir: &Path, name: &str, q: FileQuery, headers: &HeaderMap) -
             if reader.seek(SeekFrom::Start(start)).await.is_err() {
                 return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
             }
-            let stream = tokio_util::io::ReaderStream::with_capacity(
-                reader.take(len),
-                64 * 1024,
-            );
+            let stream = tokio_util::io::ReaderStream::with_capacity(reader.take(len), 64 * 1024);
             let body = Body::from_stream(stream);
             out.insert(
                 header::CONTENT_LENGTH,
@@ -214,14 +213,10 @@ pub async fn delete_file(
             Ok(()) => {
                 let frag = render_library_scan(&state.cfg.download_dir);
                 state.emit(crate::events::Event::Library(frag));
-                format!(r#"<span id="ack">deleted {}</span>"#, esc(&name))
+                render_ack(&format!("deleted {}", name), false)
             }
-            Err(e) => format!(
-                r#"<span id="ack" class="err">failed to delete {}: {}</span>"#,
-                esc(&name),
-                esc(&e.to_string())
-            ),
+            Err(e) => render_ack(&format!("failed to delete {}: {}", name, e), true),
         },
-        None => format!(r#"<span id="ack" class="err">no such file</span>"#),
+        None => render_ack("no such file", true),
     }
 }

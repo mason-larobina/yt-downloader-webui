@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_stream::stream;
 use axum::body::{Body, Bytes};
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
@@ -178,10 +178,7 @@ struct ProbeQuery {
 /// `#probe-cards`, and closes. The probe runs inline in the stream so that a
 /// client disconnect (cancel / navigate away) drops the stream and kills the
 /// yt-dlp child via `kill_on_drop`.
-async fn get_probe(
-    State(state): State<Arc<AppState>>,
-    Query(q): Query<ProbeQuery>,
-) -> Response {
+async fn get_probe(State(state): State<Arc<AppState>>, Query(q): Query<ProbeQuery>) -> Response {
     let url = q.url;
     let probe = worker::probe_stream(state.clone(), url.clone());
     let s = stream! {
@@ -215,10 +212,7 @@ async fn get_probe(
 /// (axum's default `Form`/`serde_urlencoded` does not collapse repeated
 /// `entry` keys into a `Vec`). Returns the normal header input form (swapped
 /// into `#header-input`), restoring the header for the next URL.
-async fn post_confirm(
-    State(state): State<Arc<AppState>>,
-    body: Bytes,
-) -> String {
+async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String {
     let entries: Vec<String> = form_urlencoded::parse(&body)
         .filter(|(k, _)| k == "entry")
         .map(|(_, v)| v.into_owned())
@@ -334,7 +328,7 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
     let outcome = {
         let mut q = state.queue.lock().await;
         let Some(item) = q.get(id) else {
-            return format!(r#"<span id="ack">no such item {id}</span>"#);
+            return render::render_ack(&format!("no such item {id}"), false);
         };
         match item.status {
             ItemStatus::Pending => {
@@ -357,14 +351,10 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
         Outcome::PendingRemoved => {
             emit_queue_status(&state).await;
             state.persist().await;
-            format!(r#"<span id="ack">cancelled item {id}</span>"#)
+            render::render_ack(&format!("cancelled item {id}"), false)
         }
-        Outcome::ActiveSignalled => {
-            format!(r#"<span id="ack">cancelling item {id} ...</span>"#)
-        }
-        Outcome::Noop => {
-            format!(r#"<span id="ack">item {id} not active</span>"#)
-        }
+        Outcome::ActiveSignalled => render::render_ack(&format!("cancelling item {id} ..."), false),
+        Outcome::Noop => render::render_ack(&format!("item {id} not active"), false),
     }
 }
 
@@ -377,17 +367,16 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
         // Reject retrying the active item.
         if let Some(item) = q.get(id) {
             if item.status == ItemStatus::Active {
-                return format!(
-                    r#"<span id="ack" class="err">item {id} is active; cancel it first</span>"#
-                );
+                return render::render_ack(&format!("item {id} is active; cancel it first"), true);
             }
             if item.status == ItemStatus::Done {
-                return format!(
-                    r#"<span id="ack" class="err">item {id} already downloaded; delete the file to re-download</span>"#
+                return render::render_ack(
+                    &format!("item {id} already downloaded; delete the file to re-download"),
+                    true,
                 );
             }
         } else {
-            return format!(r#"<span id="ack" class="err">no such item {id}</span>"#);
+            return render::render_ack(&format!("no such item {id}"), true);
         }
         // Reset to Pending, move to back, clear progress + error.
         if let Some(item) = q.get_mut(id) {
@@ -407,7 +396,7 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
     state.notify.notify_one();
     emit_queue_status(&state).await;
     state.persist().await;
-    format!(r#"<span id="ack">requeued item {id}</span>"#)
+    render::render_ack(&format!("requeued item {id}"), false)
 }
 
 // ------------------------------ /clear -------------------------------------
@@ -420,7 +409,10 @@ async fn post_clear(State(state): State<Arc<AppState>>) -> String {
     };
     emit_queue_status(&state).await;
     state.persist().await;
-    format!(r#"<span id="ack">cleared {n} item{}</span>"#, if n == 1 { "" } else { "s" })
+    render::render_ack(
+        &format!("cleared {n} item{}", if n == 1 { "" } else { "s" }),
+        false,
+    )
 }
 
 // ------------------------------ /thumb/:name ------------------------------
@@ -430,10 +422,7 @@ async fn post_clear(State(state): State<Arc<AppState>>) -> String {
 /// asserted to stay inside the cache dir, otherwise 404 (never an error that
 /// leaks whether a path outside the dir exists). Thumbnails are small, so no
 /// range support -- just stream the bytes.
-async fn get_thumb(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-) -> Response {
+async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
     let path = match crate::thumb::resolve(&state.cfg.cache_dir, &name) {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
@@ -455,7 +444,10 @@ async fn get_thumb(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)).unwrap(),
     );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
     (StatusCode::OK, headers, Body::from(bytes)).into_response()
 }
 
@@ -483,8 +475,7 @@ async fn get_logs(
     match item {
         Some(item) if q.lines.is_some() => render::render_log_lines(&item.logs),
         Some(item) => render::render_logs_pane(&item),
-        None => r#"<div class="lp-head"><span class="lp-title">logs</span><span class="lp-label">item gone</span></div><div id="lp-body" class="lp-body"><div id="lp-lines" class="lp-lines"><div class="lp-empty-lines">(this video is no longer in the queue)</div></div></div>"#
-            .to_string(),
+        None => render::render_logs_gone(),
     }
 }
 
@@ -498,11 +489,12 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
         let q = state.queue.lock().await;
         let item = match q.get(id) {
             Some(i) => i,
-            None => return format!(r#"<span id="ack">no such item {id}</span>"#),
+            None => return render::render_ack(&format!("no such item {id}"), false),
         };
         if !item.status.is_terminal() {
-            return format!(
-                r#"<span id="ack" class="err">item {id} is not finished; cancel it first</span>"#
+            return render::render_ack(
+                &format!("item {id} is not finished; cancel it first"),
+                true,
             );
         }
         (item.filename.clone(), state.cfg.download_dir.clone())
@@ -529,7 +521,7 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
         state.emit(crate::events::Event::Library(lib_frag));
         state.persist().await;
     }
-    format!(r#"<span id="ack">deleted item {id}{file_msg}</span>"#)
+    render::render_ack(&format!("deleted item {id}{file_msg}"), false)
 }
 
 // ------------------------------ /events (SSE) ------------------------------
@@ -543,7 +535,11 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
     // Build the snapshot under the locks, *before* the stream starts.
     let (queue_frag, status_frag, library_frag, log_lines) = {
         let q = state.queue.lock().await;
-        let active = q.items.iter().find(|i| i.status == ItemStatus::Active).cloned();
+        let active = q
+            .items
+            .iter()
+            .find(|i| i.status == ItemStatus::Active)
+            .cloned();
         let pending = q
             .items
             .iter()
@@ -603,9 +599,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
         }
     };
 
-    Sse::new(s)
-        .keep_alive(KeepAlive::default())
-        .into_response()
+    Sse::new(s).keep_alive(KeepAlive::default()).into_response()
 }
 
 /// Spawn the worker (kept here so `main` only depends on `server` + `config`).

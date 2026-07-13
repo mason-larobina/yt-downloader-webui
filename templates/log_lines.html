@@ -1,0 +1,7 @@
+{%- if lines.is_empty() %}
+<div class="lp-empty-lines">(no output yet)</div>
+{%- else %}
+{%- for l in lines %}
+<div class="logline">{{ l }}</div>
+{%- endfor %}
+{%- endif %}
