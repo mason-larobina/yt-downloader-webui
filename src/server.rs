@@ -22,7 +22,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(index))
         .route("/static/htmx.org-2.0.4.js", axum::routing::get(static_htmx))
-        .route("/static/htmx-ext-sse-2.2.4.js", axum::routing::get(static_sse))
+        .route(
+            "/static/htmx-ext-sse-2.2.4.js",
+            axum::routing::get(static_sse),
+        )
         .route("/static/app.css", axum::routing::get(static_css))
         .route("/static/icons/{name}", axum::routing::get(static_icon))
         .route("/download", axum::routing::post(post_download))

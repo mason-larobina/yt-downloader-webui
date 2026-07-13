@@ -115,7 +115,10 @@ impl Cli {
 
         let cache_dir = match self.cache_dir {
             Some(c) => expand_tilde(&c, &home),
-            None => home.join(".cache").join("yt-downloader-webui").join("thumbs"),
+            None => home
+                .join(".cache")
+                .join("yt-downloader-webui")
+                .join("thumbs"),
         };
         fs::create_dir_all(&cache_dir)
             .with_context(|| format!("failed to create cache dir: {}", cache_dir.display()))?;
