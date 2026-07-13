@@ -8,7 +8,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs"
 tokio-util = { version = "0.7", features = ["io"] }
 axum = { version = "0.8", features = ["form", "http2"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower-http = { version = "0.7", features = ["fs", "trace"] }
 form_urlencoded = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +24,6 @@ futures-util = "0.3"
 mime_guess = "2"
 async-stream = "0.3"
 tokio-stream = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
-sha1 = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+sha1 = "0.11"
 askama = { version = "0.16", features = ["urlencode", "serde_json"] }
