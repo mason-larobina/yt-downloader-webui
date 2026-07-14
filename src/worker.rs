@@ -19,7 +19,7 @@ const STATUS_THROTTLE: Duration = Duration::from_millis(200);
 
 /// Spawn the worker task. Returns its `JoinHandle` so the caller can await
 /// clean shutdown (the worker flips any active item to `Pending` and persists
-/// before exiting -- see DESIGN Sec. 8).
+/// before exiting -- see ARCHITECTURE Sec. 8).
 pub fn spawn(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run(state))
 }

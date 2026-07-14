@@ -1,7 +1,7 @@
 # yt-downloader-webui test scripts
 
 These are **not** `cargo test` unit tests. They are standalone shell scripts
-written during validation of DESIGN.md and kept here so they can be re-run on
+written during validation of ARCHITECTURE.md and kept here so they can be re-run on
 demand (e.g. after touching the worker, server, or a new yt-dlp version) or
 forked as starting points for new scenarios.
 
@@ -12,7 +12,7 @@ up an isolated server in a temp dir, and cleans up after itself.
 
 | Script                       | What it checks                                                                 |
 |------------------------------|--------------------------------------------------------------------------------|
-| `probe-ytdlp-flags.sh`       | yt-dlp `--newline --progress-template '%(progress)j'` output shape (the DESIGN Sec. 11 open question). Confirms one `\n`-terminated JSON object per tick, stdout/stderr split, `ERROR:` on failure. |
+| `probe-ytdlp-flags.sh`       | yt-dlp `--newline --progress-template '%(progress)j'` output shape (the ARCHITECTURE Sec. 11 open question). Confirms one `\n`-terminated JSON object per tick, stdout/stderr split, `ERROR:` on failure. |
 | `probe-flat-playlist.sh`    | yt-dlp `--flat-playlist -j` info-extraction shape (no download), validated against a real YouTube playlist with Firefox cookies. Confirms each entry's `url` is already the full watch URL, the streaming `-j` line carries `playlist_index`/`playlist_count`/`playlist_title`, and a single video under `--flat-playlist` is a full 623 KB extraction (so single videos are not free to probe). Saved artifacts under `tests/yt-downloader-webui-probe-flat.*` feed the parser unit tests in `src/parse.rs`. |
 | `e2e-download.sh`            | Full happy path: POST a URL, watch SSE progress/queue/log/library, file lands in the download dir, item reaches `done`, final status is idle. |
 | `persistence-restart.sh`     | SIGTERM mid-download -> item saved as `pending` -> on restart the worker re-starts it to `done`. Verifies shutdown ordering (worker exits before the final flush). |

@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
 
     // Wait for the worker to finish its shutdown handling: it kills the
     // active yt-dlp, flips that item to `Pending` (so it re-starts on next
-    // launch -- see DESIGN Sec. 8), emits final events, and persists. Awaiting
+    // launch -- see ARCHITECTURE Sec. 8), emits final events, and persists. Awaiting
     // here avoids a race where the final flush below would otherwise land
     // before the flip and leave the item serialized as `active`.
     let _ = worker_handle.await;
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
 /// human-readable stderr formatter.
 ///
 /// Filter: default `info`; `-v` bumps to `yt_downloader_webui=debug,info`; `RUST_LOG` is
-/// honoured when set explicitly (see DESIGN Sec. 3).
+/// honoured when set explicitly (see ARCHITECTURE Sec. 3).
 fn init_tracing(verbose: bool) {
     use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 

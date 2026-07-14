@@ -4,7 +4,7 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-/// The command built per DESIGN Sec. 4:
+/// The command built per ARCHITECTURE Sec. 4:
 ///
 /// ```text
 /// yt-dlp --cookies-from-browser <b> --newline \

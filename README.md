@@ -182,7 +182,7 @@ src/
 templates/      askama HTML templates
 static/         index.html, app.css, icons, vendored htmx + SSE extension
 tests/          end-to-end shell scripts
-docs/DESIGN.md  Design notes (may lag the implementation)
+docs/ARCHITECTURE.md  Architecture notes (may lag the implementation)
 ```
 
 ## License
