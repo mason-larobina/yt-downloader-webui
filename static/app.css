@@ -417,7 +417,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------- item details page (/item/:id) ---------- */
 .item-page {
-  max-width: 880px; margin: 0 auto; padding: 0 20px 80px;
+  max-width: 1160px; margin: 0 auto; padding: 0 20px 80px;
   min-height: 100vh; background: var(--bg);
 }
 .ip-topbar {
@@ -496,20 +496,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* Two-pane layout: left = primary thumb + actions + info + logs,
    right = photo grid of extracted native thumbnails. Stacks on narrow viewports. */
-.ip-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; margin-top: 20px; align-items: start; }
+.ip-layout { display: grid; grid-template-columns: minmax(0, 1fr) 480px; gap: 28px; margin-top: 20px; align-items: start; }
 .ip-left { min-width: 0; }
-.ip-right {
-  position: sticky; top: 72px;
-  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 14px;
-  padding: 14px; box-shadow: var(--shadow-sm);
-}
-.ip-frames-head { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; justify-content: space-between; }
-.ip-frames-count { font-size: 11px; font-weight: 700; color: var(--ink); background: var(--bg-2);
-  padding: 2px 8px; border-radius: 6px; }
+.ip-right { position: sticky; top: 72px; }
 .ip-frames-empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 24px 4px; text-align: center; }
 .ip-frames { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; max-height: 78vh; overflow-y: auto; scrollbar-width: thin; }
-.ip-frame-cell { display: block; border-radius: 8px; overflow: hidden; background: var(--bg-2); aspect-ratio: 16 / 9; }
+.ip-frame-cell { display: block; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg-2); aspect-ratio: 16 / 9; box-shadow: var(--shadow-sm); }
 .ip-frame-cell img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .12s ease; }
 .ip-frame-cell:hover img { transform: scale(1.04); }
 

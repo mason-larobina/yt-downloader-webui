@@ -65,7 +65,6 @@
 
         {# ---------------- Right pane: photo grid of extracted native thumbs ---------------- #}
         <aside class="ip-right">
-          <h2 class="ip-frames-head">Frames <span class="ip-frames-count">{{ thumbnails.len() }}</span></h2>
           {% if thumbnails.is_empty() %}
             <div class="ip-frames-empty">No frames extracted yet{% if status == "done" %}; generating&hellip;{% else %}.{% endif %}</div>
           {% else %}
