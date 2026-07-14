@@ -492,7 +492,7 @@ button:disabled { opacity: 0.5; cursor: default; }
    right = photo grid of extracted native thumbnails. Stacks on narrow viewports. */
 .ip-layout { display: grid; grid-template-columns: minmax(0, 1fr) 480px; gap: 28px; margin-top: 20px; align-items: start; }
 .ip-left { min-width: 0; }
-.ip-right { position: sticky; top: 72px; }
+.ip-right { position: sticky; top: 0; }
 .ip-frames-empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 24px 4px; text-align: center; }
 .ip-frames { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .ip-frame-cell { display: block; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg-2); aspect-ratio: 16 / 9; box-shadow: var(--shadow-sm); }
