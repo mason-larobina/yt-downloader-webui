@@ -38,6 +38,10 @@ struct SerializedItem {
     filename: Option<String>,
     #[serde(default)]
     thumbnail: Option<String>,
+    #[serde(default)]
+    thumbnails: Vec<String>,
+    #[serde(default)]
+    media: Option<crate::media::MediaInfo>,
     error: Option<String>,
     /// Per-item yt-dlp log lines (capped). Defaults to empty for older state
     /// files written before the logs pane existed.
@@ -151,6 +155,11 @@ async fn load_one(path: &Path, cache_dir: &Path) -> Result<QueueItem> {
         duration: s.duration,
         filename: s.filename,
         thumbnail,
+        thumbnails: s.thumbnails
+            .into_iter()
+            .filter(|name| cache_dir.join(name).is_file())
+            .collect(),
+        media: s.media,
         progress: None,
         error: s.error,
         logs: s.logs,
@@ -245,6 +254,8 @@ async fn write_item(path: &Path, item: &QueueItem) -> Result<()> {
         duration: item.duration,
         filename: item.filename.clone(),
         thumbnail: item.thumbnail.clone(),
+        thumbnails: item.thumbnails.clone(),
+        media: item.media.clone(),
         error: item.error.clone(),
         logs: item.logs.clone(),
         enqueued_at: item.enqueued_at.format(&Rfc3339Fmt).unwrap_or_default(),

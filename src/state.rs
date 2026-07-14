@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::events::{Event, RingBuffer};
+use crate::media::MediaInfo;
 
 /// Capacity of the broadcast channel (events buffered per lagging receiver).
 pub const EVENT_CHANNEL_CAP: usize = 512;
@@ -24,8 +25,6 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub log_ring: Mutex<RingBuffer<String>>,
     pub notify: Notify,
-    /// Reused async HTTP client for thumbnail fetches (HTTPS via rustls).
-    pub http: reqwest::Client,
     /// Global shutdown token. Also wired into each active item's cancel select!.
     pub shutdown: CancellationToken,
 }
@@ -33,17 +32,12 @@ pub struct AppState {
 impl AppState {
     pub fn new(cfg: Config, queue: Queue) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAP);
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yt-downloader-webui/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client build");
         Arc::new(AppState {
             cfg,
             queue: Mutex::new(queue),
             events,
             log_ring: Mutex::new(RingBuffer::new(LOG_RING_CAP)),
             notify: Notify::new(),
-            http,
             shutdown: CancellationToken::new(),
         })
     }
@@ -212,10 +206,23 @@ pub struct QueueItem {
     pub progress: Option<Progress>,
     pub error: Option<String>,
     /// Cache filename (bare basename, e.g. `<sha1>.jpg`) of the item's
-    /// thumbnail in `cfg.cache_dir`, Set during the probe (fetched from the
-    /// thumbnail URL) or, if absent then, by ffmpeg after a successful
-    /// download. `None` until resolved.
+    /// *primary* thumbnail in `cfg.cache_dir`. Set after a successful
+    /// download (native frame extracted by ffmpeg) or during import. The
+    /// primary is the middle frame of the generated set (see `thumbnails`),
+    /// chosen to be representative rather than a black intro/outro. `None`
+    /// until resolved.
     pub thumbnail: Option<String>,
+    /// All generated native thumbnail frames for this item (cache basenames
+    /// like `<sha1>.0.jpg`, `<sha1>.1.jpg`, ...), produced by ffmpeg at
+    /// logarithmically-spaced timestamps: `N = floor(ln(duration)) + 1`
+    /// frames at `t = i/N * duration`. `thumbnail` (above) is the primary
+    /// for compact rendering (card/banner); this list drives the item-page
+    /// gallery. Empty until generated.
+    pub thumbnails: Vec<String>,
+    /// ffprobe-extracted media metadata for the on-disk file. Filled after a
+    /// successful download and during import; persisted so we never re-probe
+    /// the same file. `None` until probed.
+    pub media: Option<MediaInfo>,
     /// Per-item yt-dlp output (stdout+stderr), captured line-by-line during
     /// the download and retained (capped to [`ITEM_LOG_CAP`]) for inspection in
     /// the logs pane at any point -- in-progress or after completion.
@@ -238,6 +245,8 @@ impl QueueItem {
             progress: None,
             error: None,
             thumbnail: None,
+            thumbnails: Vec::new(),
+            media: None,
             logs: Vec::new(),
             cancel: None,
             enqueued_at: time::OffsetDateTime::now_utc(),

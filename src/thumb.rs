@@ -1,9 +1,8 @@
-//! Thumbnail cache: fetch a thumbnail URL during the yt-dlp probe, or generate
-//! one from a downloaded file with ffmpeg. Files live in `cfg.cache_dir` (XDG
-//! cache home by default) and are keyed by sha1 of their source -- the
-//! thumbnail URL for fetched thumbs, the video filename for ffmpeg-generated
-//! ones. The directory is a pure cache: safe to clear; anything missing is
-//! re-fetched on the next probe or re-generated on the next download.
+//! Thumbnail cache: native (high-resolution) frames extracted from a
+//! downloaded/imported video file with ffmpeg. Files live in `cfg.cache_dir`
+//! (XDG cache home by default) and are keyed by sha1 of the video's basename:
+//! `<sha1>.<i>.jpg`. The directory is a pure cache: safe to clear; anything
+//! missing is re-generated on the next download completion or import.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -52,144 +51,116 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Pick a file extension for a fetched thumbnail: prefer the response
-/// Content-Type, falling back to the URL's path extension, then `.jpg`.
-fn ext_for(content_type: Option<&str>, url: &str) -> &'static str {
-    if let Some(ct) = content_type {
-        let ct = ct
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        match ct.as_str() {
-            "image/jpeg" | "image/jpg" => return "jpg",
-            "image/png" => return "png",
-            "image/webp" => return "webp",
-            "image/gif" => return "gif",
-            _ => {}
-        }
+/// Maximum number of frames generated for a single video. `ln(duration)`
+/// grows slowly but is uncapped; cap so a 24h recording doesn't spawn dozens
+/// of ffmpeg passes.
+const MAX_FRAMES: usize = 12;
+
+/// How many native frames to extract for a video of `duration` seconds.
+/// `floor(ln(duration)) + 1`, clamped to `[1, MAX_FRAMES]`. A short clip (<3s,
+/// `ln < 1`) yields 1 frame; a 10-min video yields 7; a 1-hour video yields 9.
+/// Returns 1 for unknown / non-positive durations.
+fn frame_count(duration: Option<f64>) -> usize {
+    let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
+    if d <= 0.0 {
+        return 1;
     }
-    // Fall back to the URL's extension.
-    let path = url.split('?').next().unwrap_or(url);
-    if let Some(ext) = path.rsplit('.').next() {
-        match ext.to_ascii_lowercase().as_str() {
-            "jpg" | "jpeg" => return "jpg",
-            "png" => return "png",
-            "webp" => return "webp",
-            "gif" => return "gif",
-            _ => {}
-        }
-    }
-    "jpg"
+    let n = (d.ln().floor() as i64 + 1).max(1) as usize;
+    n.clamp(1, MAX_FRAMES)
 }
 
-/// Fetch a thumbnail `url` into `cache_dir` and return the cache filename
-/// (`<sha1(url)>.<ext>`). A cache hit (file already present) skips the network.
-/// Best-effort: errors are returned to the caller, which treats them as
-/// non-fatal (the queue simply renders without a thumbnail, and ffmpeg may
-/// generate one after the download instead).
-pub async fn fetch(client: &reqwest::Client, cache_dir: &Path, url: &str) -> Result<String> {
-    let stem = sha1_hex(url);
-    // Cache hit: reuse the existing file for this URL (across known image
-    // extensions) so a repeat probe skips the network.
-    if let Some(hit) = cache_hit(cache_dir, &stem) {
-        return Ok(hit);
-    }
-
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("fetching thumbnail {url}"))?;
-    if !resp.status().is_success() {
-        anyhow::bail!("thumbnail {url} returned HTTP {}", resp.status());
-    }
-    let content_type = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let ext = ext_for(content_type.as_deref(), url);
-    let bytes = resp
-        .bytes()
-        .await
-        .with_context(|| format!("reading thumbnail body {url}"))?;
-    let fname = format!("{}.{}", stem, ext);
-    write_atomic(&cache_dir.join(&fname), &bytes).await?;
-    Ok(fname)
-}
-
-/// Return the existing cache filename for `stem` if any known image extension
-/// is present, so a repeat probe skips the network.
-fn cache_hit(cache_dir: &Path, stem: &str) -> Option<String> {
-    for ext in ["jpg", "png", "webp", "gif"] {
-        let name = format!("{stem}.{ext}");
-        if cache_dir.join(&name).is_file() {
-            return Some(name);
-        }
-    }
-    None
-}
-
-/// Atomically write `bytes` to `path` (`.tmp` + fsync + rename).
-async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = sibling_tmp(path);
-    {
-        let mut f = tokio::fs::File::create(&tmp)
-            .await
-            .with_context(|| format!("creating thumbnail temp {}", tmp.display()))?;
-        use tokio::io::AsyncWriteExt;
-        f.write_all(bytes).await?;
-        f.sync_all().await?;
-    }
-    tokio::fs::rename(&tmp, path)
-        .await
-        .with_context(|| format!("renaming thumbnail into {}", path.display()))?;
-    Ok(())
-}
-
-/// `<dir>/<name>.ext` -> `<dir>/<name>.ext.tmp` (sibling for atomic rename).
-fn sibling_tmp(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(|n| n.to_os_string())
-        .unwrap_or_else(|| std::ffi::OsString::from("thumb.bin"));
-    name.push(".tmp");
-    path.with_file_name(name)
-}
-
-/// Generate a thumbnail from `video_path` with ffmpeg and return the cache
-/// filename (`<sha1(basename)>.jpg`). Seeks 1s in (skipping any black intro),
-/// extracts one frame, scales to fit within ~320px wide. Best-effort: errors
-/// are returned to the caller and treated as non-fatal.
-pub async fn generate(ffmpeg: &str, cache_dir: &Path, video_path: &Path) -> Result<String> {
+/// Generate native (high-resolution) thumbnails from `video_path` with ffmpeg
+/// and return the cache filenames (`<sha1(basename)>.<i>.jpg`). The number of
+/// frames is `floor(ln(duration)) + 1` (clamped), evenly spaced at
+/// `t = i / N * duration` for `i in 0..N` -- a logarithmic count so longer
+/// videos get proportionally (but slowly) more frames without spamming ffmpeg.
+///
+/// Frames are extracted at native resolution (no downscale) with good jpeg
+/// quality (`-q:v 2`); each frame is a separate ffmpeg pass with an input
+/// `-ss` seek (fast, keyframe-accurate enough for thumbnails). A frame already
+/// present in the cache is reused (so a partial run resumes without re-extracting).
+///
+/// Best-effort: errors abort the run and return whatever frames landed so far
+/// (the caller treats a partial set as better than none).
+pub async fn generate_native(
+    ffmpeg: &str,
+    cache_dir: &Path,
+    video_path: &Path,
+    duration: Option<f64>,
+) -> Result<Vec<String>> {
     let base = video_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("video");
     let stem = sha1_hex(base);
-    // Reuse an existing generation if present.
-    if let Some(hit) = cache_hit(cache_dir, &stem) {
-        return Ok(hit);
-    }
-    let out_name = format!("{stem}.jpg");
-    let out_path = cache_dir.join(&out_name);
+    let n = frame_count(duration);
+    let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
 
-    // -y overwrite, -ss 1 seek 1s (fast, before -i), -frames:v 1 single frame,
-    // -q:v 3 good jpeg quality, scale to 320px wide keeping aspect.
+    let mut landed: Vec<String> = Vec::with_capacity(n);
+    for i in 0..n {
+        let name = format!("{stem}.{i}.jpg");
+        // Resume: reuse a frame already in the cache (across re-runs / partial).
+        if cache_dir.join(&name).is_file() {
+            landed.push(name);
+            continue;
+        }
+        // Evenly spaced: t = i / N * duration. Clamp the first frame to a tiny
+        // offset so a black intro frame at t=0 isn't the primary, while still
+        // honouring the even-spacing formula.
+        let t = if n == 1 {
+            // Single frame: seek 1s in (skip black intro) capped to duration/2.
+            (d / 2.0).min(1.0).max(0.1)
+        } else {
+            let raw = i as f64 * d / n as f64;
+            if i == 0 {
+                raw.max(0.1)
+            } else {
+                raw
+            }
+        };
+        match extract_frame(ffmpeg, cache_dir, video_path, &name, t).await {
+            Ok(()) => landed.push(name),
+            Err(e) => {
+                tracing::debug!(
+                    "ffmpeg frame {i} (t={t:.1}s) failed for {}: {e:#}",
+                    video_path.display()
+                );
+                // Continue to the next frame rather than aborting the whole set;
+                // a partial gallery is better than none.
+            }
+        }
+    }
+    if landed.is_empty() {
+        anyhow::bail!(
+            "no thumbnail frames extracted for {}",
+            video_path.display()
+        );
+    }
+    Ok(landed)
+}
+
+/// Extract one frame at timestamp `t` (seconds) from `video_path` into
+/// `cache_dir/<out_name>` as a high-quality jpeg at native resolution.
+async fn extract_frame(
+    ffmpeg: &str,
+    cache_dir: &Path,
+    video_path: &Path,
+    out_name: &str,
+    t: f64,
+) -> Result<()> {
+    let out_path = cache_dir.join(out_name);
+    // -y overwrite, -ss before -i (fast keyframe seek), -frames:v 1 single
+    // frame, -q:v 2 high jpeg quality, no scale (native resolution).
     let mut cmd = tokio::process::Command::new(ffmpeg);
     cmd.arg("-y")
         .arg("-ss")
-        .arg("1")
+        .arg(format!("{t:.3}"))
         .arg("-i")
         .arg(video_path)
         .arg("-frames:v")
         .arg("1")
         .arg("-q:v")
-        .arg("3")
-        .arg("-vf")
-        .arg("scale=320:-2")
+        .arg("2")
         .arg(&out_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -202,7 +173,7 @@ pub async fn generate(ffmpeg: &str, cache_dir: &Path, video_path: &Path) -> Resu
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
-            "ffmpeg exited ({}) for {}: {}",
+            "ffmpeg exited ({}) for {} at t={t:.1}s: {}",
             output.status,
             video_path.display(),
             stderr.trim()
@@ -210,12 +181,13 @@ pub async fn generate(ffmpeg: &str, cache_dir: &Path, video_path: &Path) -> Resu
     }
     if !out_path.is_file() {
         anyhow::bail!(
-            "ffmpeg reported success but wrote no thumbnail for {}",
+            "ffmpeg reported success but wrote no frame for {} at t={t:.1}s",
             video_path.display()
         );
     }
-    Ok(out_name)
+    Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -239,35 +211,19 @@ mod tests {
     }
 
     #[test]
-    fn ext_for_prefers_content_type() {
-        assert_eq!(ext_for(Some("image/jpeg"), "https://x/y?v=1"), "jpg");
-        assert_eq!(ext_for(Some("image/png"), "https://x/y"), "png");
-        assert_eq!(ext_for(Some("image/webp"), ""), "webp");
-        assert_eq!(ext_for(Some("image/gif"), ""), "gif");
-        // content-type with params
-        assert_eq!(ext_for(Some("image/jpeg; charset=binary"), ""), "jpg");
-        // unknown content-type falls back to URL extension
-        assert_eq!(
-            ext_for(Some("application/octet-stream"), "https://x/thumb.PNG"),
-            "png"
-        );
-    }
-
-    #[test]
-    fn ext_for_falls_back_to_url_then_jpg() {
-        assert_eq!(ext_for(None, "https://x/path/pic.webp?sqp=x"), "webp");
-        assert_eq!(ext_for(None, "https://x/path/noext"), "jpg");
-        assert_eq!(ext_for(None, ""), "jpg");
-    }
-
-    #[test]
-    fn cache_hit_finds_existing_extension() {
-        let dir = tempfile_dir();
-        let stem = "deadbeef";
-        std::fs::write(dir.join(format!("{stem}.png")), b"x").unwrap();
-        assert_eq!(cache_hit(&dir, stem), Some(format!("{stem}.png")));
-        assert!(cache_hit(&dir, "missing").is_none());
-        std::fs::remove_dir_all(&dir).ok();
+    fn frame_count_scales_with_duration() {
+        // Unknown / non-positive duration -> 1 frame.
+        assert_eq!(frame_count(None), 1);
+        assert_eq!(frame_count(Some(0.0)), 1);
+        assert_eq!(frame_count(Some(-1.0)), 1);
+        // ln(2)≈0.69 -> floor 0 +1 = 1.
+        assert_eq!(frame_count(Some(2.0)), 1);
+        // ln(60)≈4.09 -> 5.
+        assert_eq!(frame_count(Some(60.0)), 5);
+        // ln(600)≈6.40 -> 7.
+        assert_eq!(frame_count(Some(600.0)), 7);
+        // Capped at MAX_FRAMES for very long durations.
+        assert_eq!(frame_count(Some(86400.0)), MAX_FRAMES);
     }
 
     #[test]
@@ -299,15 +255,16 @@ mod tests {
         dir
     }
 
-    /// End-to-end: ffmpeg synthesises a 2s colour clip, then `thumb::generate`
-    /// extracts a 1s-in frame into the cache. Ignored by default (needs
-    /// ffmpeg on PATH); run with `cargo test -- --ignored`.
+    /// End-to-end: ffmpeg synthesises a 2s colour clip, then
+    /// `thumb::generate_native` extracts `frame_count(2.0)` frames (1 frame for
+    /// a 2s clip) into the cache. Ignored by default (needs ffmpeg on PATH);
+    /// run with `cargo test -- --ignored`.
     #[tokio::test]
     #[ignore]
     async fn generate_extracts_frame_from_synthetic_video() {
         let cache = tempfile_dir();
         let video = cache.join("clip.mp4");
-        // Generate a 2s red clip so the 1s seek lands on a real frame.
+        // Generate a 2s red clip. ln(2)≈0.69 -> floor=0 -> 1 frame.
         let out = tokio::process::Command::new("ffmpeg")
             .arg("-y")
             .args(["-f", "lavfi", "-i", "color=c=red:s=320x240:d=2"])
@@ -322,42 +279,24 @@ mod tests {
         assert!(out.status.success(), "ffmpeg synth failed: {out:?}");
         assert!(video.is_file());
 
-        let name = generate("ffmpeg", &cache, &video).await.expect("generate");
-        assert_eq!(name, format!("{}.jpg", sha1_hex("clip.mp4")));
-        let thumb = cache.join(&name);
+        let names = generate_native("ffmpeg", &cache, &video, Some(2.0))
+            .await
+            .expect("generate_native");
+        assert_eq!(names.len(), 1, "2s clip -> 1 frame");
+        assert_eq!(names[0], format!("{}.0.jpg", sha1_hex("clip.mp4")));
+        let thumb = cache.join(&names[0]);
         assert!(
             thumb.is_file(),
             "thumbnail not written at {}",
             thumb.display()
         );
         assert!(thumb.metadata().unwrap().len() > 0);
-        // Cache hit on a second call (no ffmpeg re-run needed).
-        let name2 = generate("ffmpeg", &cache, &video).await.expect("generate2");
-        assert_eq!(name, name2);
+        // A second call reuses the cached frame (no ffmpeg re-run).
+        let names2 = generate_native("ffmpeg", &cache, &video, Some(2.0))
+            .await
+            .expect("generate_native2");
+        assert_eq!(names, names2);
 
-        std::fs::remove_dir_all(&cache).ok();
-    }
-
-    /// End-to-end fetch against the real YouTube thumbnail URL captured in the
-    /// probe fixture. Ignored by default (needs network); run with
-    /// `cargo test -- --ignored`.
-    #[tokio::test]
-    #[ignore]
-    async fn fetch_caches_real_thumbnail() {
-        let cache = tempfile_dir();
-        let client = reqwest::Client::builder()
-            .user_agent("yt-downloader-webui-test")
-            .build()
-            .unwrap();
-        let url = "https://i.ytimg.com/vi/p8eM3MEd_A4/hqdefault.jpg";
-        let name = fetch(&client, &cache, url).await.expect("fetch");
-        assert_eq!(name, format!("{}.jpg", sha1_hex(url)));
-        let path = cache.join(&name);
-        assert!(path.is_file());
-        assert!(path.metadata().unwrap().len() > 0);
-        // Cache hit on a second call (no network).
-        let name2 = fetch(&client, &cache, url).await.expect("fetch2");
-        assert_eq!(name, name2);
         std::fs::remove_dir_all(&cache).ok();
     }
 }

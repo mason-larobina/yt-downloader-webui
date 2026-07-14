@@ -246,37 +246,12 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         }
     };
 
-    // Determine Done / Failed. For a successful download with no thumbnail
-    // yet, generate one from the downloaded file with ffmpeg (best-effort,
-    // captured here so the final queue event includes the thumb). Runs without
-    // the queue lock held.
+    // Determine Done / Failed. Media metadata (ffprobe) + native thumbnails
+    // are filled by `import::reconcile`, which sweeps the download dir after
+    // every completion (and on startup): it probes the just-finished file for
+    // codec/duration/resolution and extracts ln(duration) frames. Spawned in
+    // the background so the worker can immediately proceed to the next item.
     let success = status.success();
-    let mut gen_thumb: Option<String> = None;
-    if success {
-        let (have_thumb, video_path) = {
-            let q = state.queue.lock().await;
-            let item = match q.get(item_id) {
-                Some(i) => i,
-                None => return,
-            };
-            (
-                item.thumbnail.clone(),
-                item.filename
-                    .clone()
-                    .map(|base| state.cfg.download_dir.join(base)),
-            )
-        };
-        if have_thumb.is_none()
-            && let Some(vp) = video_path
-        {
-            match crate::thumb::generate(&state.cfg.ffmpeg, &state.cfg.cache_dir, &vp).await {
-                Ok(fname) => gen_thumb = Some(fname),
-                Err(e) => {
-                    tracing::debug!("ffmpeg thumbnail generation failed for item {item_id}: {e:#}");
-                }
-            }
-        }
-    }
     {
         let mut q = state.queue.lock().await;
         if let Some(item) = q.get_mut(item_id) {
@@ -284,11 +259,6 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             if success {
                 item.status = ItemStatus::Done;
                 item.progress = None;
-                if let Some(fname) = &gen_thumb
-                    && item.thumbnail.is_none()
-                {
-                    item.thumbnail = Some(fname.clone());
-                }
                 tracing::info!("item {item_id} done");
             } else {
                 item.status = ItemStatus::Failed;
@@ -310,6 +280,13 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     emit_final(state, Some(item_id)).await;
     state.emit(Event::Library(lib_frag));
     state.persist().await;
+
+    // Sweep the download dir: probe the just-finished file's media + generate
+    // its native thumbnails (and pick up any other unreferenced files). Only
+    // for a successful download; a failure produced no file to import.
+    if success {
+        tokio::spawn(crate::import::reconcile(state.clone()));
+    }
 }
 
 /// Read lines from a child pipe and forward them to `tx`.

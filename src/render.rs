@@ -2,6 +2,7 @@
 use std::path::Path;
 
 use crate::library::LibraryFile;
+use crate::media::MediaInfo;
 use crate::parse::FlatEntry;
 use crate::state::{ItemStatus, Queue, QueueItem};
 
@@ -309,10 +310,17 @@ struct ItemPage<'a> {
     label: &'a str,
     url: &'a str,
     thumb: Option<&'a str>,
+    /// All native thumbnail frames (cache basenames) for the gallery.
+    thumbnails: &'a [String],
     filename: Option<&'a str>,
     dur: String,
     error: Option<&'a str>,
     enqueued: String,
+    /// Pre-formatted media strings (or `None`) for the metadata table.
+    media_video: Option<String>,
+    media_audio: Option<String>,
+    media_bitrate: Option<String>,
+    media_format: Option<String>,
     /// Poll the log body only while the download may still emit output.
     polling: bool,
     lines: Vec<String>,
@@ -339,6 +347,7 @@ pub fn render_item_page(item: &QueueItem) -> String {
             .unwrap_or(&item.url),
         url: &item.url,
         thumb: item.thumbnail.as_deref(),
+        thumbnails: &item.thumbnails,
         filename: item.filename.as_deref(),
         dur: human_duration(item.duration),
         error: item.error.as_deref(),
@@ -348,11 +357,32 @@ pub fn render_item_page(item: &QueueItem) -> String {
                 "[year]-[month]-[day] [hour]:[minute]"
             ))
             .unwrap_or_default(),
+        media_video: item.media.as_ref().and_then(media_video_str),
+        media_audio: item
+            .media
+            .as_ref()
+            .and_then(|m| m.audio_codec.clone()),
+        media_bitrate: item.media.as_ref().and_then(|m| m.bitrate_str()),
+        media_format: item.media.as_ref().and_then(|m| m.format.clone()),
         polling: matches!(item.status, ItemStatus::Pending | ItemStatus::Active),
         lines,
     }
     .render()
     .unwrap_or_default()
+}
+
+/// Format the video-stream line: `h264 · 1920x1080 · 29.97 fps`. `None` if no
+/// video codec was probed.
+fn media_video_str(m: &MediaInfo) -> Option<String> {
+    let codec = m.video_codec.clone()?;
+    let mut bits: Vec<String> = vec![codec];
+    if let Some(r) = m.resolution_str() {
+        bits.push(r);
+    }
+    if let Some(fps) = m.fps {
+        bits.push(format!("{fps:.2} fps"));
+    }
+    Some(bits.join(" \u{00b7} "))
 }
 
 /// The standalone "this video is no longer in the queue" page served by

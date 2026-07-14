@@ -16,7 +16,11 @@
       </header>
 
       <div class="ip-thumb">
-        {% if let Some(name) = thumb %}
+        {% if !thumbnails.is_empty() %}
+          <div class="ip-thumb-gallery">
+            {% for name in thumbnails %}<img class="ip-frame" src="/thumb/{{ name }}" alt="" loading="lazy">{% endfor %}
+          </div>
+        {% else if let Some(name) = thumb %}
           <img src="/thumb/{{ name }}" alt="">
         {% else %}
           <div class="ip-thumb-placeholder"></div>
@@ -39,9 +43,13 @@
       <section class="ip-details">
         <h1 class="ip-title">{{ label }}</h1>
         <dl class="ip-meta">
-          <dt>url</dt><dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>
+          {% if !url.is_empty() %}<dt>url</dt><dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>{% endif %}
           <dt>status</dt><dd class="ip-status {{ status }}">{{ status }}</dd>
           {% if !dur.is_empty() %}<dt>duration</dt><dd>{{ dur }}</dd>{% endif %}
+          {% if let Some(v) = media_video %}<dt>video</dt><dd>{{ v }}</dd>{% endif %}
+            {% if let Some(a) = media_audio %}<dt>audio</dt><dd>{{ a }}</dd>{% endif %}
+            {% if let Some(b) = media_bitrate %}<dt>bitrate</dt><dd>{{ b }}</dd>{% endif %}
+            {% if let Some(f) = media_format %}<dt>format</dt><dd>{{ f }}</dd>{% endif %}
           {% if let Some(name) = filename %}<dt>file</dt><dd>{{ name }}</dd>{% endif %}
           <dt>enqueued</dt><dd>{{ enqueued }}</dd>
         </dl>

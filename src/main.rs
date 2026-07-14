@@ -1,7 +1,9 @@
 //! `yt-downloader-webui` entry point: CLI -> Config -> load queue -> start server.
 mod config;
 mod events;
+mod import;
 mod library;
+mod media;
 mod parse;
 mod persist;
 mod render;
@@ -37,6 +39,11 @@ async fn main() -> Result<()> {
     if let Err(e) = config::ffmpeg_check(&cfg.ffmpeg) {
         tracing::warn!("{e}");
     }
+    // ffprobe identifies videos + extracts metadata for import; like ffmpeg it
+    // is best-effort (a missing ffprobe just disables import), so warn only.
+    if let Err(e) = config::ffprobe_check(&cfg.ffprobe) {
+        tracing::warn!("{e}");
+    }
 
     tracing::info!(
         download_dir = %cfg.download_dir.display(),
@@ -58,6 +65,12 @@ async fn main() -> Result<()> {
     }
 
     let state = AppState::new(cfg.clone(), queue);
+
+    // Reconcile the download dir with the state index: import unreferenced
+    // videos as Done items, dedupe duplicate state files per filename, probe
+    // missing media, and (in the background) generate missing native
+    // thumbnails. Spawned so server start is not blocked by ffprobe/ffmpeg.
+    tokio::spawn(import::reconcile(state.clone()));
 
     // Clone for the graceful-shutdown future (state itself is used after serve).
     let state_clone = state.clone();
