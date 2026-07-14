@@ -16,7 +16,7 @@ up an isolated server in a temp dir, and cleans up after itself.
 | `probe-flat-playlist.sh`    | yt-dlp `--flat-playlist -j` info-extraction shape (no download), validated against a real YouTube playlist with Firefox cookies. Confirms each entry's `url` is already the full watch URL, the streaming `-j` line carries `playlist_index`/`playlist_count`/`playlist_title`, and a single video under `--flat-playlist` is a full 623 KB extraction (so single videos are not free to probe). Saved artifacts under `tests/yt-downloader-webui-probe-flat.*` feed the parser unit tests in `src/parse.rs`. |
 | `e2e-download.sh`            | Full happy path: POST a URL, watch SSE progress/queue/log/library, file lands in the download dir, item reaches `done`, final status is idle. |
 | `persistence-restart.sh`     | SIGTERM mid-download -> item saved as `pending` -> on restart the worker re-starts it to `done`. Verifies shutdown ordering (worker exits before the final flush). |
-| `endpoints.sh`               | Queue controls (`/download` -> probe-area shell, GET `/probe` SSE result, POST `/confirm`, `/cancel`, `/retry`, `/clear`), file serving (inline/download/range), `/delete`, path-traversal guards, probe-error -> result event (no queue item), cancel+retry cycle. |
+| `endpoints.sh`               | Queue controls (`/download` -> probe-area shell, GET `/probe` SSE result, POST `/confirm`, `/cancel`, `/retry`), file serving (inline/download/range), `/delete`, path-traversal guards, probe-error -> result event (no queue item), cancel+retry cycle. |
 
 ## Usage
 

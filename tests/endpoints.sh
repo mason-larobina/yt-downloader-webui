@@ -3,7 +3,7 @@
 #
 # Covers DESIGN.md Sec. 6/9:
 #   POST /download (header -> probe-area shell), GET /probe (SSE result),
-#   POST /confirm (enqueue selected), /cancel/:id, /retry/:id, /clear
+#   POST /confirm (enqueue selected), /cancel/:id, /retry/:id
 #   GET  /library, /file/:name (inline + download, range)
 #   POST /delete/:name
 #   Path traversal: /file/.., /file/<encoded> -> 404
@@ -152,10 +152,6 @@ if [[ -n "$ITEM_ID" ]]; then
 else
   echo "SKIP retry: the download finished before we could cancel it (try a slower URL)"
 fi
-
-echo "=== POST /clear ==="
-ack=$(curl -s -X POST "$base/clear")
-echo "clear ack: $ack"
 
 echo "=== create a fake file and test /file, /delete, traversal ==="
 echo "fake video data" > "$DL/sample.mp4"

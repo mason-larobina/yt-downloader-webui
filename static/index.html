@@ -40,7 +40,7 @@
      SSE event; hidden via the `idle` class when the queue is empty. -->
 <div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>
 
-<!-- Transient ack toast: cancel/retry/clear/delete actions swap a short
+<!-- Transient ack toast: cancel/retry/delete actions swap a short
      confirmation here; auto-cleared after a few seconds. -->
 <div id="ack" class="ack-toast"></div>
 
@@ -48,7 +48,7 @@
   // Global SSE connection (htmx sse extension picks this up at body level).
   document.body.setAttribute('sse-connect', '/events');
 
-  // Transient ack toast: POST actions (cancel/retry/clear/delete) swap a
+  // Transient ack toast: POST actions (cancel/retry/delete) swap a
   // short confirmation into #ack; auto-clear it after a few seconds so it
   // doesn't linger. (The live queue/progress state lives in the floating
   // banner, not here.)

@@ -34,7 +34,6 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/confirm", axum::routing::post(post_confirm))
         .route("/cancel/{id}", axum::routing::post(post_cancel))
         .route("/retry/{id}", axum::routing::post(post_retry))
-        .route("/clear", axum::routing::post(post_clear))
         .route("/library", axum::routing::get(library::get_library))
         .route("/file/{name}", axum::routing::get(library::get_file))
         .route("/thumb/{name}", axum::routing::get(get_thumb))
@@ -396,22 +395,6 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
     emit_queue_status(&state).await;
     state.persist().await;
     render::render_ack(&format!("requeued item {id}"), false)
-}
-
-// ------------------------------ /clear -------------------------------------
-
-/// POST /clear -- drop all done/failed/cancelled items.
-async fn post_clear(State(state): State<Arc<AppState>>) -> String {
-    let n = {
-        let mut q = state.queue.lock().await;
-        q.clear_terminal()
-    };
-    emit_queue_status(&state).await;
-    state.persist().await;
-    render::render_ack(
-        &format!("cleared {n} item{}", if n == 1 { "" } else { "s" }),
-        false,
-    )
 }
 
 // ------------------------------ /thumb/:name ------------------------------

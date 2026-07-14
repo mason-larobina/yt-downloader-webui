@@ -263,8 +263,6 @@ struct QueueView<'a> {
     items_empty: bool,
     total: usize,
     pending: usize,
-    /// Terminal (done/failed/cancelled) count -- drives the "clear N" button.
-    clear: usize,
     cards: Vec<Card<'a>>,
 }
 
@@ -273,11 +271,6 @@ pub fn render_queue(queue: &Queue) -> String {
         .items
         .iter()
         .filter(|i| i.status == ItemStatus::Pending)
-        .count();
-    let terminal = queue
-        .items
-        .iter()
-        .filter(|i| i.status.is_terminal())
         .count();
     let total = queue.items.len();
 
@@ -288,7 +281,6 @@ pub fn render_queue(queue: &Queue) -> String {
         items_empty: queue.items.is_empty(),
         total,
         pending,
-        clear: terminal,
         cards,
     }
     .render()

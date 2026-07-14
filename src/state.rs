@@ -168,19 +168,6 @@ impl Queue {
         }
         false
     }
-    /// Drop all terminal (Done/Failed/Cancelled) items. Pending + active retained.
-    /// Returns the number removed.
-    pub fn clear_terminal(&mut self) -> usize {
-        let before = self.items.len();
-        self.items.retain(|i| {
-            !matches!(
-                i.status,
-                ItemStatus::Done | ItemStatus::Failed | ItemStatus::Cancelled
-            )
-        });
-        before - self.items.len()
-    }
-
     /// Trim terminal history so the queue view stays bounded.
     pub fn trim_history(&mut self) {
         if self.items.len() <= QUEUE_HISTORY_CAP {
