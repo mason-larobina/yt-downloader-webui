@@ -2,3 +2,4 @@
 # Captured yt-dlp output from tests/probe-flat-playlist.sh (pasted back for
 # inspection; large, regenerable on demand -- not source).
 /tests/web-dl-probe-flat.*
+/yt-dlp
