@@ -840,8 +840,8 @@ mod card_tests {
         // The card itself is a stretched link to the details page (the old
         // per-card "i" inspect button is gone).
         assert!(
-            html.contains(r#"class="card-link" href="/item/7""#),
-            "stretched link targets details page"
+            html.contains(r#"class="card-link" href="/item/7" target="_blank" rel="noopener""#),
+            "stretched link opens details in a new tab"
         );
         assert!(
             !html.contains("/static/icons/info.svg"),
@@ -900,8 +900,8 @@ mod card_tests {
         let html = render_card(&item(ItemStatus::Pending, None));
         assert!(html.contains(r#"title="cancel download"#));
         assert!(
-            html.contains(r#"class="card-link" href="/item/7""#),
-            "stretched link targets details page"
+            html.contains(r#"class="card-link" href="/item/7" target="_blank" rel="noopener""#),
+            "stretched link opens details in a new tab"
         );
         assert!(!html.contains("/static/icons/info.svg"), "no inspect icon");
         assert_eq!(html.matches("<img").count(), 1, "cancel icon only");
@@ -943,8 +943,8 @@ mod card_tests {
         assert!(html.contains(r#"src="/static/icons/trash.svg"#));
         // The captured error surfaces on the card.
         assert!(html.contains("Video unavailable"));
-        // Card is still a stretched link to the details page.
-        assert!(html.contains(r#"class="card-link" href="/item/7""#));
+        // Card is still a stretched link to the details page (new tab).
+        assert!(html.contains(r#"class="card-link" href="/item/7" target="_blank" rel="noopener""#));
     }
 
     /// render_status idle banner is hidden; queued banner shows the count;
