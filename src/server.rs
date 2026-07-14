@@ -474,9 +474,14 @@ async fn get_logs(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> St
 /// no longer in the queue (cleared / never existed), serves a minimal
 /// "gone" page with a back link instead of a bare 404.
 async fn get_item_page(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Response {
-    let item = state.queue.lock().await.get(id).cloned();
+    let (item, nav) = {
+        let q = state.queue.lock().await;
+        let item = q.get(id).cloned();
+        let nav = q.nav_window(id);
+        (item, nav)
+    };
     let body = match item {
-        Some(item) => render::render_item_page(&item),
+        Some(item) => render::render_item_page(&item, nav),
         None => render::render_item_gone(),
     };
     let mut headers = HeaderMap::new();

@@ -11,8 +11,17 @@
     <div class="item-page">
 
       <header class="ip-topbar">
-        <a class="ip-back" href="/">&larr; downloads</a>
-        <span class="ip-badge {{ status }}">{{ status }}</span>
+        <nav class="ip-strip">
+          {% for n in nav %}
+            <a class="ip-thumb-cell{% if n.id == id %} selected{% endif %}" href="/item/{{ n.id }}" title="item {{ n.id }}">
+              {% if let Some(name) = n.thumb %}
+                <img src="/thumb/{{ name }}" alt="" loading="lazy">
+              {% else %}
+                <span class="ip-thumb-cell-ph"></span>
+              {% endif %}
+            </a>
+          {% endfor %}
+        </nav>
       </header>
 
       <div class="ip-layout">
@@ -80,14 +89,24 @@
     <div id="item-ack" class="ack-toast"></div>
 
     <script>
-      // Escape navigates back to the downloads list (mirrors the "<- downloads"
-      // back link). Only acts when there's history to return to, otherwise it
-      // falls back to a hard navigate to "/".
+      // Arrow keys move one step along the top-nav strip: Left = newer
+      // sibling (prev, toward the top-left of the card grid), Right = older
+      // sibling (next). No-op at the queue edges (no sibling cell). The
+      // strip is in grid order (newest first), so the previousElementSibling
+      // is newer and nextElementSibling is older.
       document.addEventListener('keydown', function (e) {
-        if (e.key !== 'Escape') return;
-        e.preventDefault();
-        if (window.history.length > 1) window.history.back();
-        else window.location.href = '/';
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        var t = e.target && e.target.tagName;
+        if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
+        var sel = null;
+        if (e.key === 'ArrowLeft') sel = document.querySelector('.ip-thumb-cell.selected');
+        else if (e.key === 'ArrowRight') sel = document.querySelector('.ip-thumb-cell.selected');
+        if (!sel) return;
+        var sib = e.key === 'ArrowLeft' ? sel.previousElementSibling : sel.nextElementSibling;
+        if (sib) {
+          var href = sib.getAttribute('href');
+          if (href) { e.preventDefault(); window.location.href = href; }
+        }
       });
 
       // Transient ack toast: POST actions (cancel/retry/delete) swap a short

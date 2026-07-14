@@ -8,6 +8,15 @@ use crate::config::Config;
 use crate::events::{Event, RingBuffer};
 use crate::media::MediaInfo;
 
+/// One cell of the details-page top-nav thumbnail strip. `id` is the queue
+/// item id (the strip links to `/item/{id}`); `thumb` is the cache basename of
+/// the item's primary thumbnail, or `None` for a placeholder cell.
+#[derive(Debug, Clone)]
+pub struct NavThumb {
+    pub id: u64,
+    pub thumb: Option<String>,
+}
+
 /// Capacity of the broadcast channel (events buffered per lagging receiver).
 pub const EVENT_CHANNEL_CAP: usize = 512;
 /// Max log lines replayed on connect.
@@ -136,6 +145,39 @@ impl Queue {
     /// Find an item by id.
     pub fn get(&self, id: u64) -> Option<&QueueItem> {
         self.items.iter().find(|i| i.id == id)
+    }
+
+    /// The 7-thumbnail strip shown in the details-page top nav, in **grid
+    /// order** (newest first -- the card grid renders the queue in reverse).
+    /// The current item is always present and the window is centered on it,
+    /// clamped at the edges so a full 7 thumbs still show at the start/end of
+    /// the queue (there the current is the leftmost / rightmost respectively).
+    /// Fewer than 7 thumbs only when the queue itself is shorter.
+    pub fn nav_window(&self, id: u64) -> Vec<NavThumb> {
+        let n = self.items.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        // Grid order = reverse of the FIFO queue (newest first).
+        let grid: Vec<&QueueItem> = self.items.iter().rev().collect();
+        let Some(gpos) = grid.iter().position(|i| i.id == id) else {
+            return Vec::new();
+        };
+        let size = n.min(7);
+        // Center on gpos, clamped to a valid window start.
+        let mut start = gpos.saturating_sub(3);
+        let max_start = n.saturating_sub(size);
+        if start > max_start {
+            start = max_start;
+        }
+        let end = (start + size).min(n);
+        grid[start..end]
+            .iter()
+            .map(|it| NavThumb {
+                id: it.id,
+                thumb: it.thumbnail.clone(),
+            })
+            .collect()
     }
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut QueueItem> {
@@ -425,5 +467,50 @@ mod tests {
         let again = q.enqueue("https://example/v/1".to_string(), None, None);
         assert_eq!(again, Some(2));
         assert_eq!(q.items.len(), 2);
+    }
+
+    /// `nav_window` returns the 7-thumb strip in grid order (newest first),
+    /// centered on the current item and clamped at the edges so 7 thumbs
+    /// still show at the start/end of the queue.
+    #[test]
+    fn nav_window_centers_and_clamps() {
+        let mut q = Queue::new();
+        for i in 1..=11 {
+            q.enqueue(format!("v{i}"), None, None); // 1 (oldest) .. 11 (newest)
+            q.get_mut(i).unwrap().thumbnail = Some(format!("t{i}.jpg"));
+        }
+
+        let ids = |w: Vec<NavThumb>| w.into_iter().map(|t| t.id).collect::<Vec<_>>();
+
+        // Newest (11, grid idx 0): clamped left, selected leftmost, [11..5].
+        assert_eq!(ids(q.nav_window(11)), vec![11, 10, 9, 8, 7, 6, 5]);
+        // Near-newest (10, idx 1): window can't start before 0, still [11..5];
+        // selected is 2nd from left.
+        assert_eq!(ids(q.nav_window(10)), vec![11, 10, 9, 8, 7, 6, 5]);
+        // idx 3 (id 8): last index where the window is still pinned left; the
+        // current item sits in the middle of [11..5].
+        assert_eq!(ids(q.nav_window(8)), vec![11, 10, 9, 8, 7, 6, 5]);
+        // idx 4 (id 7): window slides one, [10..4], current in the middle.
+        assert_eq!(ids(q.nav_window(7)), vec![10, 9, 8, 7, 6, 5, 4]);
+        // idx 6 (id 5): window [8..2].
+        assert_eq!(ids(q.nav_window(5)), vec![8, 7, 6, 5, 4, 3, 2]);
+        // idx 7 (id 4): clamped right, [7..1], current in the middle.
+        assert_eq!(ids(q.nav_window(4)), vec![7, 6, 5, 4, 3, 2, 1]);
+        // Oldest (1, idx 10): clamped right, selected rightmost, [7..1].
+        assert_eq!(ids(q.nav_window(1)), vec![7, 6, 5, 4, 3, 2, 1]);
+        // Missing id: empty strip.
+        assert!(q.nav_window(99).is_empty());
+    }
+
+    /// With fewer than 7 items the strip shows all of them (no padding).
+    #[test]
+    fn nav_window_shows_all_when_queue_short() {
+        let mut q = Queue::new();
+        q.enqueue("a".to_string(), None, None); // 1 (older)
+        q.enqueue("b".to_string(), None, None); // 2 (newer)
+        let ids = |w: Vec<NavThumb>| w.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        // Newer first: [2, 1].
+        assert_eq!(ids(q.nav_window(2)), vec![2, 1]);
+        assert_eq!(ids(q.nav_window(1)), vec![2, 1]);
     }
 }
