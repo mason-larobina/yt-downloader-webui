@@ -25,6 +25,10 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub log_ring: Mutex<RingBuffer<String>>,
     pub notify: Notify,
+    /// Reused async HTTP client for remote thumbnail fetches (HTTPS via rustls).
+    /// The fetched thumbnail is the *primary* thumbnail (highest quality);
+    /// when none is available, a native ffmpeg-extracted frame is the fallback.
+    pub http: reqwest::Client,
     /// Global shutdown token. Also wired into each active item's cancel select!.
     pub shutdown: CancellationToken,
 }
@@ -32,12 +36,17 @@ pub struct AppState {
 impl AppState {
     pub fn new(cfg: Config, queue: Queue) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAP);
+        let http = reqwest::Client::builder()
+            .user_agent(concat!("yt-downloader-webui/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .expect("reqwest client build");
         Arc::new(AppState {
             cfg,
             queue: Mutex::new(queue),
             events,
             log_ring: Mutex::new(RingBuffer::new(LOG_RING_CAP)),
             notify: Notify::new(),
+            http,
             shutdown: CancellationToken::new(),
         })
     }
@@ -206,18 +215,18 @@ pub struct QueueItem {
     pub progress: Option<Progress>,
     pub error: Option<String>,
     /// Cache filename (bare basename, e.g. `<sha1>.jpg`) of the item's
-    /// *primary* thumbnail in `cfg.cache_dir`. Set after a successful
-    /// download (native frame extracted by ffmpeg) or during import. The
-    /// primary is the middle frame of the generated set (see `thumbnails`),
-    /// chosen to be representative rather than a black intro/outro. `None`
-    /// until resolved.
+    /// *primary* thumbnail in `cfg.cache_dir`. The primary is the remote
+    /// thumbnail fetched from the probe's thumbnail URL (highest quality);
+    /// when none is available, a native ffmpeg-extracted frame (the middle of
+    /// the generated set in `thumbnails`) is used as a fallback. `None` until
+    /// one resolves.
     pub thumbnail: Option<String>,
     /// All generated native thumbnail frames for this item (cache basenames
     /// like `<sha1>.0.jpg`, `<sha1>.1.jpg`, ...), produced by ffmpeg at
     /// logarithmically-spaced timestamps: `N = floor(ln(duration)) + 1`
-    /// frames at `t = i/N * duration`. `thumbnail` (above) is the primary
-    /// for compact rendering (card/banner); this list drives the item-page
-    /// gallery. Empty until generated.
+    /// frames at `t = i/N * duration`. These populate the item-page gallery
+    /// (a photo grid on the right pane) and act as the fallback `thumbnail`
+    /// (primary) when no remote thumbnail was fetched. Empty until generated.
     pub thumbnails: Vec<String>,
     /// ffprobe-extracted media metadata for the on-disk file. Filled after a
     /// successful download and during import; persisted so we never re-probe

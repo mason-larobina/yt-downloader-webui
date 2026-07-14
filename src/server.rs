@@ -218,16 +218,21 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
         return render::render_header_input(Some("select at least one video"));
     }
 
+    // (item id, thumbnail URL) pairs to fetch in the background. The fetched
+    // remote thumbnail is the *primary* thumbnail (highest quality); when none
+    // is fetched, a native ffmpeg-extracted frame (generated after the download)
+    // acts as the fallback primary.
+    let mut thumbs: Vec<(u64, String)> = Vec::new();
     {
         let mut q = state.queue.lock().await;
         for raw in &entries {
             match serde_json::from_str::<render::ApprovalEntry>(raw) {
                 Ok(e) => {
-                    // Native thumbnails are extracted by ffmpeg after the
-                    // download completes (see worker.rs); the probe's remote
-                    // thumbnail URL is used only as a transient preview on the
-                    // confirm cards and is never fetched/persisted.
-                    let _ = q.enqueue(e.url, e.title, e.duration);
+                    if let Some(id) = q.enqueue(e.url, e.title, e.duration)
+                        && let Some(t) = e.thumbnail
+                    {
+                        thumbs.push((id, t));
+                    }
                 }
                 Err(_) => {
                     // Skip a malformed value rather than failing the whole
@@ -240,10 +245,62 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
     emit_queue_status(&state).await;
     state.persist().await;
 
+    if !thumbs.is_empty() {
+        spawn_thumbnail_fetches(state.clone(), thumbs);
+    }
+
     render::render_header_input(None)
 }
 
 // ------------------------------ /cancel/:id --------------------------------
+
+/// Spawn a background task that fetches a batch of remote thumbnails
+/// concurrently (no lock held during network I/O), then sets each landed
+/// filename on its item under one lock and emits a single `queue` swap +
+/// persist. The fetched remote thumbnail is the *primary* thumbnail; failures
+/// are non-fatal -- a native ffmpeg-extracted frame (generated after the
+/// download completes via `import::reconcile`) acts as the fallback primary,
+/// and the native frames always populate the item-page gallery regardless.
+fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
+    tokio::spawn(async move {
+        let mut set = tokio::task::JoinSet::new();
+        for (id, url) in items {
+            let http = state.http.clone();
+            let dir = state.cfg.cache_dir.clone();
+            set.spawn(async move {
+                let r = crate::thumb::fetch(&http, &dir, &url).await;
+                (id, r)
+            });
+        }
+        let mut landed: Vec<(u64, String)> = Vec::new();
+        while let Some(res) = set.join_next().await {
+            match res {
+                Ok((id, Ok(fname))) => landed.push((id, fname)),
+                Ok((id, Err(e))) => {
+                    tracing::debug!("thumbnail fetch failed for item {id}: {e:#}");
+                }
+                Err(e) => tracing::debug!("thumbnail fetch task panicked: {e}"),
+            }
+        }
+        if landed.is_empty() {
+            return;
+        }
+        let mut q = state.queue.lock().await;
+        for (id, fname) in &landed {
+            if let Some(item) = q.get_mut(*id) {
+                // The remote thumbnail is the highest-quality primary; set it
+                // unless one already resolved (an earlier fetch, or a native
+                // frame already landed as a fallback).
+                if item.thumbnail.is_none() {
+                    item.thumbnail = Some(fname.clone());
+                }
+            }
+        }
+        state.emit(Event::Queue(render::render_queue(&q)));
+        drop(q);
+        state.persist().await;
+    });
+}
 
 /// Emit a `queue` + `status` swap together. Used by request handlers after
 /// mutating the queue so the floating banner (status: pending count / active

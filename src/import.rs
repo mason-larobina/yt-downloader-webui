@@ -265,9 +265,11 @@ async fn probe_missing_media(state: &Arc<AppState>) -> bool {
     true
 }
 
-/// Step 4 (background): for each Done item with a present file but no
-/// thumbnails, extract native `ln(duration)` frames with ffmpeg and set
-/// `thumbnails` + the primary `thumbnail`. One spawned task processes items
+/// Step 4 (background): for each Done item with a present file but no native
+/// frames, extract `ln(duration)` frames with ffmpeg into `thumbnails` (the
+/// item-page gallery) and set the *primary* `thumbnail` as a fallback -- only
+/// when no remote thumbnail was fetched (the remote thumb, if present, is the
+/// preferred highest-quality primary). One spawned task processes items
 /// sequentially (each item's frames are themselves sequential ffmpeg passes);
 /// idempotent via cache reuse, so concurrent/overlapping runs only fill gaps.
 fn spawn_thumbnail_generation(state: Arc<AppState>) {
@@ -310,7 +312,9 @@ fn spawn_thumbnail_generation(state: Arc<AppState>) {
                 }
             };
             // Re-check under the lock: another concurrent run may have filled it.
-            let primary = frames.get(frames.len() / 2).cloned();
+            // The primary (remote) thumb, if already fetched, is left alone --
+            // the native middle frame is only a fallback primary.
+            let fallback_primary = frames.get(frames.len() / 2).cloned();
             let landed = {
                 let mut q = state.queue.lock().await;
                 let Some(item) = q.get_mut(id) else {
@@ -321,7 +325,7 @@ fn spawn_thumbnail_generation(state: Arc<AppState>) {
                 }
                 item.thumbnails = frames.clone();
                 if item.thumbnail.is_none() {
-                    if let Some(p) = primary.clone() {
+                    if let Some(p) = fallback_primary.clone() {
                         item.thumbnail = Some(p);
                     }
                 }

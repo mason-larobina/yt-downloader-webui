@@ -1,8 +1,14 @@
-//! Thumbnail cache: native (high-resolution) frames extracted from a
-//! downloaded/imported video file with ffmpeg. Files live in `cfg.cache_dir`
-//! (XDG cache home by default) and are keyed by sha1 of the video's basename:
-//! `<sha1>.<i>.jpg`. The directory is a pure cache: safe to clear; anything
-//! missing is re-generated on the next download completion or import.
+//! Thumbnail cache: remote thumbnails fetched during the yt-dlp probe are the
+//! *primary* thumbnail (highest quality); when none is available a native
+//! (high-resolution) frame extracted from the downloaded file by ffmpeg is
+//! used as a fallback. The native frames also form the item-page gallery.
+//!
+//! Files live in `cfg.cache_dir` (XDG cache home by default) and are keyed by
+//! sha1 of their source: the thumbnail URL for fetched thumbs (`<sha1>.<ext>`),
+//! the video basename for ffmpeg-generated frames (`<sha1>.<i>.jpg`). The
+//! directory is a pure cache: safe to clear; fetched thumbs are re-fetched on
+//! the next probe and native frames re-generated on the next download /
+//! import.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -49,6 +55,113 @@ fn hex(bytes: &[u8]) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+/// Pick a file extension for a fetched thumbnail: prefer the response
+/// Content-Type, falling back to the URL's path extension, then `.jpg`.
+fn ext_for(content_type: Option<&str>, url: &str) -> &'static str {
+    if let Some(ct) = content_type {
+        let ct = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        match ct.as_str() {
+            "image/jpeg" | "image/jpg" => return "jpg",
+            "image/png" => return "png",
+            "image/webp" => return "webp",
+            "image/gif" => return "gif",
+            _ => {}
+        }
+    }
+    // Fall back to the URL's extension.
+    let path = url.split('?').next().unwrap_or(url);
+    if let Some(ext) = path.rsplit('.').next() {
+        match ext.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => return "jpg",
+            "png" => return "png",
+            "webp" => return "webp",
+            "gif" => return "gif",
+            _ => {}
+        }
+    }
+    "jpg"
+}
+
+/// Fetch a thumbnail `url` into `cache_dir` and return the cache filename
+/// (`<sha1(url)>.<ext>`). A cache hit (file already present) skips the network.
+/// Best-effort: errors are returned to the caller, which treats them as
+/// non-fatal (a native frame extracted by ffmpeg after the download acts as
+/// the fallback primary instead).
+pub async fn fetch(client: &reqwest::Client, cache_dir: &Path, url: &str) -> Result<String> {
+    let stem = sha1_hex(url);
+    // Cache hit: reuse the existing file for this URL (across known image
+    // extensions) so a repeat probe skips the network.
+    if let Some(hit) = cache_hit(cache_dir, &stem) {
+        return Ok(hit);
+    }
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("fetching thumbnail {url}"))?;
+    if !resp.status().is_success() {
+        anyhow::bail!("thumbnail {url} returned HTTP {}", resp.status());
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let ext = ext_for(content_type.as_deref(), url);
+    let bytes = resp
+        .bytes()
+        .await
+        .with_context(|| format!("reading thumbnail body {url}"))?;
+    let fname = format!("{}.{}", stem, ext);
+    write_atomic(&cache_dir.join(&fname), &bytes).await?;
+    Ok(fname)
+}
+
+/// Return the existing cache filename for `stem` if any known image extension
+/// is present, so a repeat probe skips the network.
+fn cache_hit(cache_dir: &Path, stem: &str) -> Option<String> {
+    for ext in ["jpg", "png", "webp", "gif"] {
+        let name = format!("{stem}.{ext}");
+        if cache_dir.join(&name).is_file() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Atomically write `bytes` to `path` (`.tmp` + fsync + rename).
+async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = sibling_tmp(path);
+    {
+        let mut f = tokio::fs::File::create(&tmp)
+            .await
+            .with_context(|| format!("creating thumbnail temp {}", tmp.display()))?;
+        use tokio::io::AsyncWriteExt;
+        f.write_all(bytes).await?;
+        f.sync_all().await?;
+    }
+    tokio::fs::rename(&tmp, path)
+        .await
+        .with_context(|| format!("renaming thumbnail into {}", path.display()))?;
+    Ok(())
+}
+
+/// `<dir>/<name>.ext` -> `<dir>/<name>.ext.tmp` (sibling for atomic rename).
+fn sibling_tmp(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from("thumb.bin"));
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 /// Maximum number of frames generated for a single video. `ln(duration)`

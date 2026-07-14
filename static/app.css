@@ -438,16 +438,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ip-badge.pending { background: var(--pending); }
 
 /* Full-width thumbnail. */
-.ip-thumb { margin-top: 20px; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden;
+.ip-thumb { aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden;
   background: var(--bg-inset); box-shadow: var(--shadow-md); }
 .ip-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.ip-thumb-gallery {
-  width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
-  display: flex; gap: 4px; scrollbar-width: thin;
-}
-.ip-thumb-gallery .ip-frame {
-  height: 100%; width: auto; flex: 0 0 auto; object-fit: cover; display: block;
-}
 .ip-thumb-placeholder { width: 100%; height: 100%; background:
   repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 12px, var(--bg-3) 12px, var(--bg-3) 24px); }
 
@@ -501,7 +494,29 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ip-lines .logline { color: var(--fg); }
 .ip-gone { color: var(--muted); font-style: italic; padding: 60px 0; text-align: center; font-weight: 600; }
 
+/* Two-pane layout: left = primary thumb + actions + info + logs,
+   right = photo grid of extracted native thumbnails. Stacks on narrow viewports. */
+.ip-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; margin-top: 20px; align-items: start; }
+.ip-left { min-width: 0; }
+.ip-right {
+  position: sticky; top: 72px;
+  background: var(--bg-inset); border: 1px solid var(--line); border-radius: 14px;
+  padding: 14px; box-shadow: var(--shadow-sm);
+}
+.ip-frames-head { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; justify-content: space-between; }
+.ip-frames-count { font-size: 11px; font-weight: 700; color: var(--ink); background: var(--bg-2);
+  padding: 2px 8px; border-radius: 6px; }
+.ip-frames-empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 24px 4px; text-align: center; }
+.ip-frames { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; max-height: 78vh; overflow-y: auto; scrollbar-width: thin; }
+.ip-frame-cell { display: block; border-radius: 8px; overflow: hidden; background: var(--bg-2); aspect-ratio: 16 / 9; }
+.ip-frame-cell img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .12s ease; }
+.ip-frame-cell:hover img { transform: scale(1.04); }
+
 @media (max-width: 760px) {
   .item-page { padding: 0 14px 60px; }
   .big-btn { flex: 1 1 100%; }
+  .ip-layout { grid-template-columns: 1fr; }
+  .ip-right { position: static; }
+  .ip-frames { grid-template-columns: repeat(3, 1fr); max-height: none; }
 }
