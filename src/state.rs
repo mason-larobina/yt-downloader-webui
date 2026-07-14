@@ -223,8 +223,8 @@ pub struct QueueItem {
     pub thumbnail: Option<String>,
     /// All generated native thumbnail frames for this item (cache basenames
     /// like `<sha1>.0.jpg`, `<sha1>.1.jpg`, ...), produced by ffmpeg at
-    /// logarithmically-spaced timestamps: `N = floor(ln(duration)) + 1`
-    /// frames at `t = i/N * duration`. These populate the item-page gallery
+    /// evenly-spaced interior timestamps: `N = floor(1.5*ln(duration)) + 1`
+    /// frames at `t = (i+1)/(N+1) * duration` (start and end dropped). These populate the item-page gallery
     /// (a photo grid on the right pane) and act as the fallback `thumbnail`
     /// (primary) when no remote thumbnail was fetched. Empty until generated.
     pub thumbnails: Vec<String>,

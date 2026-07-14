@@ -164,29 +164,30 @@ fn sibling_tmp(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Maximum number of frames generated for a single video. `ln(duration)`
-/// grows slowly but is uncapped; cap so a 24h recording doesn't spawn dozens
-/// of ffmpeg passes.
-const MAX_FRAMES: usize = 12;
-
 /// How many native frames to extract for a video of `duration` seconds.
-/// `floor(ln(duration)) + 1`, clamped to `[1, MAX_FRAMES]`. A short clip (<3s,
-/// `ln < 1`) yields 1 frame; a 10-min video yields 7; a 1-hour video yields 9.
+/// `floor(1.5 * ln(duration)) + 1`, floored at 1. The 1.5x factor gives ~50%
+/// more frames than a plain `ln(duration)` count so longer videos get a richer
+/// gallery without spamming ffmpeg. `ln` grows slowly enough on its own that no
+/// upper cap is needed (a 24h recording yields 16 frames). A short clip (<2s,
+/// `1.5*ln < 1`) yields 1 frame; a 10-min video yields 10; a 1-hour video 13.
 /// Returns 1 for unknown / non-positive durations.
 fn frame_count(duration: Option<f64>) -> usize {
     let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
     if d <= 0.0 {
         return 1;
     }
-    let n = (d.ln().floor() as i64 + 1).max(1) as usize;
-    n.clamp(1, MAX_FRAMES)
+    let n = (d.ln() * 1.5).floor() as i64 + 1;
+    n.max(1) as usize
 }
 
 /// Generate native (high-resolution) thumbnails from `video_path` with ffmpeg
 /// and return the cache filenames (`<sha1(basename)>.<i>.jpg`). The number of
-/// frames is `floor(ln(duration)) + 1` (clamped), evenly spaced at
-/// `t = i / N * duration` for `i in 0..N` -- a logarithmic count so longer
-/// videos get proportionally (but slowly) more frames without spamming ffmpeg.
+/// frames is `floor(1.5 * ln(duration)) + 1`, evenly spaced at
+/// `t = (i + 1) / (N + 1) * duration` for `i in 0..N` -- a logarithmic count so
+/// longer videos get proportionally (but slowly) more frames without spamming
+/// ffmpeg, and interior spacing that drops the very start (t=0, often a black
+/// intro) and the very end (t=duration, often credits/fade) while keeping the
+/// remaining frames at equal intervals.
 ///
 /// Frames are extracted at native resolution (no downscale) with good jpeg
 /// quality (`-q:v 2`); each frame is a separate ffmpeg pass with an input
@@ -217,20 +218,12 @@ pub async fn generate_native(
             landed.push(name);
             continue;
         }
-        // Evenly spaced: t = i / N * duration. Clamp the first frame to a tiny
-        // offset so a black intro frame at t=0 isn't the primary, while still
-        // honouring the even-spacing formula.
-        let t = if n == 1 {
-            // Single frame: seek 1s in (skip black intro) capped to duration/2.
-            (d / 2.0).min(1.0).max(0.1)
-        } else {
-            let raw = i as f64 * d / n as f64;
-            if i == 0 {
-                raw.max(0.1)
-            } else {
-                raw
-            }
-        };
+        // Evenly spaced interior points: t = (i + 1) / (N + 1) * duration.
+        // This drops the very start (t=0, often a black intro) and the very
+        // end (t=duration, often credits/fade) while keeping equal intervals
+        // across the remaining frames. For N=1 this naturally lands at the
+        // midpoint (d/2).
+        let t = (i as f64 + 1.0) * d / (n as f64 + 1.0);
         match extract_frame(ffmpeg, cache_dir, video_path, &name, t).await {
             Ok(()) => landed.push(name),
             Err(e) => {
@@ -329,14 +322,14 @@ mod tests {
         assert_eq!(frame_count(None), 1);
         assert_eq!(frame_count(Some(0.0)), 1);
         assert_eq!(frame_count(Some(-1.0)), 1);
-        // ln(2)≈0.69 -> floor 0 +1 = 1.
-        assert_eq!(frame_count(Some(2.0)), 1);
-        // ln(60)≈4.09 -> 5.
-        assert_eq!(frame_count(Some(60.0)), 5);
-        // ln(600)≈6.40 -> 7.
-        assert_eq!(frame_count(Some(600.0)), 7);
-        // Capped at MAX_FRAMES for very long durations.
-        assert_eq!(frame_count(Some(86400.0)), MAX_FRAMES);
+        // ln(2)≈0.69 -> 1.5*0.69≈1.04 -> floor 1 +1 = 2.
+        assert_eq!(frame_count(Some(2.0)), 2);
+        // ln(60)≈4.09 -> 1.5*4.09≈6.14 -> floor 6 +1 = 7.
+        assert_eq!(frame_count(Some(60.0)), 7);
+        // ln(600)≈6.40 -> 1.5*6.40≈9.60 -> floor 9 +1 = 10.
+        assert_eq!(frame_count(Some(600.0)), 10);
+        // ln(86400)â11.38 -> 1.5*11.38â17.07 -> floor 17 +1 = 18.
+        assert_eq!(frame_count(Some(86400.0)), 18);
     }
 
     #[test]
@@ -369,15 +362,15 @@ mod tests {
     }
 
     /// End-to-end: ffmpeg synthesises a 2s colour clip, then
-    /// `thumb::generate_native` extracts `frame_count(2.0)` frames (1 frame for
-    /// a 2s clip) into the cache. Ignored by default (needs ffmpeg on PATH);
+    /// `thumb::generate_native` extracts `frame_count(2.0)` frames (2 frames
+    /// for a 2s clip) into the cache. Ignored by default (needs ffmpeg on PATH);
     /// run with `cargo test -- --ignored`.
     #[tokio::test]
     #[ignore]
     async fn generate_extracts_frame_from_synthetic_video() {
         let cache = tempfile_dir();
         let video = cache.join("clip.mp4");
-        // Generate a 2s red clip. ln(2)≈0.69 -> floor=0 -> 1 frame.
+        // Generate a 2s red clip. ln(2)≈0.69 -> 1.5*0.69≈1.04 -> 2 frames.
         let out = tokio::process::Command::new("ffmpeg")
             .arg("-y")
             .args(["-f", "lavfi", "-i", "color=c=red:s=320x240:d=2"])
@@ -395,7 +388,7 @@ mod tests {
         let names = generate_native("ffmpeg", &cache, &video, Some(2.0))
             .await
             .expect("generate_native");
-        assert_eq!(names.len(), 1, "2s clip -> 1 frame");
+        assert_eq!(names.len(), 2, "2s clip -> 2 frames");
         assert_eq!(names[0], format!("{}.0.jpg", sha1_hex("clip.mp4")));
         let thumb = cache.join(&names[0]);
         assert!(

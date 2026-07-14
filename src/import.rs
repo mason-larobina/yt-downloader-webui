@@ -24,7 +24,7 @@
 //!    deduped items, by externally-deleted videos, or any stray cache file.
 //!    The cache dir is a pure cache, so unreferenced files are safe to drop.
 //! 6. **Generate thumbnails** -- Done items missing `thumbnails` get native
-//!    `ln(duration)` frames extracted (background, best-effort).
+//!    `1.5*ln(duration)` frames extracted (background, best-effort).
 //!
 //! ffprobe results are persisted on the item so we never re-probe the same
 //! file; thumbnail generation is idempotent (cache reuse) so a repeat run
@@ -390,7 +390,7 @@ async fn garbage_collect_thumbs(state: &Arc<AppState>) {
 }
 
 /// Step 6 (background): for each Done item with a present file but no native
-/// frames, extract `ln(duration)` frames with ffmpeg into `thumbnails` (the
+/// frames, extract `1.5*ln(duration)` frames with ffmpeg into `thumbnails` (the
 /// item-page gallery) and set the *primary* `thumbnail` as a fallback -- only
 /// when no remote thumbnail was fetched (the remote thumb, if present, is the
 /// preferred highest-quality primary). One spawned task processes items
