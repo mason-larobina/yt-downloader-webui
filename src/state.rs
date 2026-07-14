@@ -222,11 +222,18 @@ pub struct QueueItem {
     /// one resolves.
     pub thumbnail: Option<String>,
     /// All generated native thumbnail frames for this item (cache basenames
-    /// like `<sha1>.0.jpg`, `<sha1>.1.jpg`, ...), produced by ffmpeg at
-    /// evenly-spaced interior timestamps: `N = floor(1.5*ln(duration)) + 1`
-    /// frames at `t = (i+1)/(N+1) * duration` (start and end dropped). These populate the item-page gallery
-    /// (a photo grid on the right pane) and act as the fallback `thumbnail`
-    /// (primary) when no remote thumbnail was fetched. Empty until generated.
+    /// like `<sha1>.jpg`, one per frame), produced by ffmpeg at
+    /// evenly-spaced interior timestamps: `N = frame_count(duration)`
+    /// (log2-anchored: 10s → 2, 1h → 16) frames at
+    /// `t = (i+1)/(N+1) * duration` (start and end dropped). Each filename is
+    /// the sha1 of the frame's own bytes, so identical frames (a static scene,
+    /// or the same frame shared across videos) share one cache file; entries
+    /// may repeat within this `Vec` (one per sampled timestamp) even then.
+    /// `import::reconcile` regenerates the set whenever `len() !=
+    /// frame_count(duration)` (formula or duration changed). These populate the
+    /// item-page gallery (a photo grid on the right pane) and act as the
+    /// fallback `thumbnail` (primary) when no remote thumbnail was fetched.
+    /// Empty until generated.
     pub thumbnails: Vec<String>,
     /// ffprobe-extracted media metadata for the on-disk file. Filled after a
     /// successful download and during import; persisted so we never re-probe

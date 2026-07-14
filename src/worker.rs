@@ -249,7 +249,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     // Determine Done / Failed. Media metadata (ffprobe) + native thumbnails
     // are filled by `import::reconcile`, which sweeps the download dir after
     // every completion (and on startup): it probes the just-finished file for
-    // codec/duration/resolution and extracts 1.5*ln(duration) frames. Spawned in
+    // codec/duration/resolution and extracts frame_count(duration) frames. Spawned in
     // the background so the worker can immediately proceed to the next item.
     let success = status.success();
     {

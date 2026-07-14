@@ -19,17 +19,24 @@
 //! 4. **Probe media** -- Done items missing `media` (older state files
 //!    predating this feature, or a freshly-finished download) are probed and
 //!    their `duration` is filled from the probe if previously unknown.
-//! 5. **Garbage-collect thumbs** -- cache files not referenced by any live
+//! 5. **Reset stale thumbnail counts** -- a Done item whose `thumbnails.len()`
+//!    no longer matches `frame_count(duration)` (the formula or the probed
+//!    duration changed since the frames were generated) has its native frames
+//!    dropped (and its `thumbnail` cleared if it was a native fallback, not a
+//!    fetched remote thumb). Step 6 then reclaims the orphaned files and step
+//!    7 regenerates the correct count from scratch.
+//! 6. **Garbage-collect thumbs** -- cache files not referenced by any live
 //!    item's `thumbnail`/`thumbnails` are deleted: thumbs owned by pruned /
 //!    deduped items, by externally-deleted videos, or any stray cache file.
 //!    The cache dir is a pure cache, so unreferenced files are safe to drop.
-//! 6. **Generate thumbnails** -- Done items missing `thumbnails` get native
-//!    `1.5*ln(duration)` frames extracted (background, best-effort).
+//! 7. **Generate thumbnails** -- Done items missing `thumbnails` get native
+//!    `frame_count(duration)` frames extracted (background, best-effort).
 //!
 //! ffprobe results are persisted on the item so we never re-probe the same
-//! file; thumbnail generation is idempotent (cache reuse) so a repeat run
-//! only fills gaps. Thumb ownership: each state file owns its thumbs via the
-//! `thumbnail` (primary) + `thumbnails` (native gallery) fields; step 5
+//! file; thumbnail generation is content-addressed (a re-run only re-extracts
+//! frames whose content isn't already cached) so concurrent/overlapping runs
+//! only fill gaps. Thumb ownership: each state file owns its thumbs via the
+//! `thumbnail` (primary) + `thumbnails` (native gallery) fields; step 6
 //! enforces that no cache file outlives the state file that owns it.
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,6 +66,7 @@ pub async fn reconcile(state: Arc<AppState>) {
     changed |= prune_missing_files(&state).await;
     changed |= import_unreferenced(&state).await;
     changed |= probe_missing_media(&state).await;
+    changed |= reset_stale_thumbnail_counts(&state).await;
 
     if changed {
         state.persist().await;
@@ -334,7 +342,64 @@ async fn probe_missing_media(state: &Arc<AppState>) -> bool {
     true
 }
 
-/// Step 5: garbage-collect the thumbnail cache. Each state file owns its
+/// Step 5: reset stale native thumbnail sets. A Done item whose
+/// `thumbnails.len()` no longer equals `frame_count(duration)` had its frames
+/// generated under a different formula or a different (since-reprobed)
+/// duration, so the set is stale. Drop the native frames (clearing `thumbnails`)
+/// and, if the primary `thumbnail` was one of those native frames (i.e. a
+/// fallback -- not a fetched remote thumb), clear it too. Step 6 then reclaims
+/// the orphaned cache files (shared content-addressed files survive while any
+/// other live item still references them) and step 7 regenerates the correct
+/// count from scratch.
+///
+/// Items with an unknown duration are skipped: `frame_count(None)` is just the
+/// 1-frame floor, not a meaningful target, so we cannot tell whether an
+/// existing set is stale (and would rather keep a richer gallery than degrade
+/// it to a single frame). Returns true if any item was reset.
+async fn reset_stale_thumbnail_counts(state: &Arc<AppState>) -> bool {
+    let mut reset = 0u64;
+    {
+        let mut q = state.queue.lock().await;
+        for item in q.items.iter_mut() {
+            if item.status != ItemStatus::Done || item.thumbnails.is_empty() {
+                continue;
+            }
+            let duration = item
+                .duration
+                .or_else(|| item.media.as_ref().and_then(|m| m.duration))
+                .filter(|d| *d > 0.0);
+            // Unknown duration: can't compute a meaningful expected count.
+            let Some(d) = duration else { continue };
+            let expected = thumb::frame_count(Some(d));
+            if item.thumbnails.len() == expected {
+                continue;
+            }
+            tracing::info!(
+                "reset: item {} has {} native frame(s), expected {expected}; regenerating",
+                item.id,
+                item.thumbnails.len()
+            );
+            // If the primary is one of the native frames (a fallback), drop it
+            // so step 7 re-picks from the regenerated set. A fetched remote
+            // thumb (not in `thumbnails`) is left untouched.
+            if item
+                .thumbnail
+                .as_deref()
+                .is_some_and(|t| item.thumbnails.iter().any(|n| n == t))
+            {
+                item.thumbnail = None;
+            }
+            item.thumbnails.clear();
+            reset += 1;
+        }
+    }
+    if reset > 0 {
+        tracing::info!("reset: {reset} item(s) with stale thumbnail counts");
+    }
+    reset > 0
+}
+
+/// Step 6: garbage-collect the thumbnail cache. Each state file owns its
 /// thumbs via the `thumbnail` (primary) and `thumbnails` (native gallery)
 /// fields; any cache file not referenced by any live item is an orphan and
 /// is deleted. This reclaims thumbs owned by pruned / deduped items (whose
@@ -389,13 +454,15 @@ async fn garbage_collect_thumbs(state: &Arc<AppState>) {
     }
 }
 
-/// Step 6 (background): for each Done item with a present file but no native
-/// frames, extract `1.5*ln(duration)` frames with ffmpeg into `thumbnails` (the
+/// Step 7 (background): for each Done item with a present file but no native
+/// frames, extract `frame_count(duration)` frames with ffmpeg into `thumbnails` (the
 /// item-page gallery) and set the *primary* `thumbnail` as a fallback -- only
 /// when no remote thumbnail was fetched (the remote thumb, if present, is the
 /// preferred highest-quality primary). One spawned task processes items
 /// sequentially (each item's frames are themselves sequential ffmpeg passes);
-/// idempotent via cache reuse, so concurrent/overlapping runs only fill gaps.
+/// idempotent via content-addressing (a frame whose content is already
+/// cached is reused, even across videos), so concurrent/overlapping runs only
+/// fill gaps.
 fn spawn_thumbnail_generation(state: Arc<AppState>) {
     tokio::spawn(async move {
         let ffmpeg = state.cfg.ffmpeg.clone();

@@ -3,13 +3,16 @@
 //! (high-resolution) frame extracted from the downloaded file by ffmpeg is
 //! used as a fallback. The native frames also form the item-page gallery.
 //!
-//! Files live in `cfg.cache_dir` (XDG cache home by default) and are keyed by
-//! sha1 of their source: the thumbnail URL for fetched thumbs (`<sha1>.<ext>`),
-//! the video basename for ffmpeg-generated frames (`<sha1>.<i>.jpg`). The
-//! directory is a pure cache: safe to clear; fetched thumbs are re-fetched on
-//! the next probe and native frames re-generated on the next download /
-//! import.
+//! Files live in `cfg.cache_dir` (XDG cache home by default). Fetched
+//! (remote) thumbnails are keyed by sha1 of their URL (`<sha1>.<ext>`) so a
+//! repeat probe skips the network; native ffmpeg-generated frames are
+//! content-addressed -- keyed by sha1 of the frame's own bytes
+//! (`<sha1>.jpg`) -- so identical frames (a static scene, or the same frame
+//! shared across videos) collapse to a single cache file. The directory is a
+//! pure cache: safe to clear; fetched thumbs are re-fetched on the next probe
+//! and native frames re-generated on the next download / import.
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use sha1::{Digest, Sha1};
@@ -45,6 +48,13 @@ pub fn resolve(cache_dir: &Path, name: &str) -> Option<PathBuf> {
 fn sha1_hex(s: &str) -> String {
     let mut h = Sha1::new();
     h.update(s.as_bytes());
+    hex(&h.finalize())
+}
+
+/// sha1 hex of `bytes` (used to content-address native frames).
+fn sha1_hex_bytes(bytes: &[u8]) -> String {
+    let mut h = Sha1::new();
+    h.update(bytes);
     hex(&h.finalize())
 }
 
@@ -179,7 +189,7 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 /// any positive duration is floored at 2, mirroring `screens`: a one-frame
 /// gallery is never useful (the opening frame alone rarely represents the
 /// content, so we always sample at least two interior points).
-fn frame_count(duration: Option<f64>) -> usize {
+pub(crate) fn frame_count(duration: Option<f64>) -> usize {
     let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
     if d <= 0.0 {
         return 1;
@@ -190,53 +200,70 @@ fn frame_count(duration: Option<f64>) -> usize {
 }
 
 /// Generate native (high-resolution) thumbnails from `video_path` with ffmpeg
-/// and return the cache filenames (`<sha1(basename)>.<i>.jpg`). The number of
-/// frames is the `screens`-style log2-anchored count (`frame_count`: 10s → 2,
-/// 1h → 16), evenly spaced at `t = (i + 1) / (N + 1) * duration` for `i in
-/// 0..N` -- a logarithmic count so longer videos get proportionally (but
-/// slowly) more frames without spamming ffmpeg, and interior spacing that
-/// drops the very start (t=0, often a black intro) and the very end
-/// (t=duration, often credits/fade) while keeping the remaining frames at
-/// equal intervals.
+/// and return the cache filenames. The number of frames is the `screens`-style
+/// log2-anchored count (`frame_count`: 10s → 2, 1h → 16), evenly spaced at
+/// `t = (i + 1) / (N + 1) * duration` for `i in 0..N` -- a logarithmic count so
+/// longer videos get proportionally (but slowly) more frames without spamming
+/// ffmpeg, and interior spacing that drops the very start (t=0, often a black
+/// intro) and the very end (t=duration, often credits/fade) while keeping the
+/// remaining frames at equal intervals.
 ///
-/// Frames are extracted at native resolution (no downscale) with good jpeg
-/// quality (`-q:v 2`); each frame is a separate ffmpeg pass with an input
-/// `-ss` seek (fast, keyframe-accurate enough for thumbnails). A frame already
-/// present in the cache is reused (so a partial run resumes without re-extracting).
+/// Each frame is extracted at native resolution (no downscale) with good jpeg
+/// quality (`-q:v 2`) into a temp file, then **content-addressed**: the final
+/// cache name is `<sha1(frame bytes)>.jpg`. Identical frames (a static scene,
+/// or the same frame shared across videos) therefore collapse to a single cache
+/// file, so the cache never stores the same image twice. Each frame's name is
+/// recorded in the returned `Vec` even when it duplicates a prior entry -- the
+/// count stays equal to the number of frames sampled, so a caller comparing
+/// `len() == frame_count(duration)` to detect a stale set is never fooled by
+/// incidental content dedup. A separate ffmpeg pass per frame uses an input
+/// `-ss` seek (fast, keyframe-accurate enough for thumbnails).
 ///
-/// Best-effort: errors abort the run and return whatever frames landed so far
-/// (the caller treats a partial set as better than none).
+/// Best-effort: a per-frame error is logged and skipped (the temp is cleaned
+/// up), returning whatever frames landed so far -- a partial gallery is better
+/// than none. The caller treats a short set (`len != frame_count`) as stale and
+/// re-runs generation to fill it.
 pub async fn generate_native(
     ffmpeg: &str,
     cache_dir: &Path,
     video_path: &Path,
     duration: Option<f64>,
 ) -> Result<Vec<String>> {
-    let base = video_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("video");
-    let stem = sha1_hex(base);
     let n = frame_count(duration);
     let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
+    let pid = std::process::id();
 
     let mut landed: Vec<String> = Vec::with_capacity(n);
     for i in 0..n {
-        let name = format!("{stem}.{i}.jpg");
-        // Resume: reuse a frame already in the cache (across re-runs / partial).
-        if cache_dir.join(&name).is_file() {
-            landed.push(name);
-            continue;
-        }
         // Evenly spaced interior points: t = (i + 1) / (N + 1) * duration.
         // This drops the very start (t=0, often a black intro) and the very
         // end (t=duration, often credits/fade) while keeping equal intervals
         // across the remaining frames. For N=1 this naturally lands at the
         // midpoint (d/2).
         let t = (i as f64 + 1.0) * d / (n as f64 + 1.0);
-        match extract_frame(ffmpeg, cache_dir, video_path, &name, t).await {
-            Ok(()) => landed.push(name),
+
+        // Extract into a unique temp file. It is a dotfile (so the orphan gc
+        // skips it like other in-flight temps) but keeps a `.jpg` extension so
+        // ffmpeg can infer the image2 muxer from the filename. The name is
+        // process- and nonce-unique so concurrent generate_native calls (e.g.
+        // several items in one reconcile pass) never clobber each other.
+        let nonce = FRAME_NONCE.fetch_add(1, Ordering::Relaxed);
+        let tmp_name = format!(".native-{pid}-{nonce}-{i}.jpg");
+        let tmp_path = cache_dir.join(&tmp_name);
+
+        match extract_frame(ffmpeg, video_path, &tmp_path, t).await {
+            Ok(()) => match finalize_content_addressed(cache_dir, &tmp_path).await {
+                Ok(name) => landed.push(name),
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    tracing::debug!(
+                        "finalize frame {i} (t={t:.1}s) failed for {}: {e:#}",
+                        video_path.display()
+                    );
+                }
+            },
             Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
                 tracing::debug!(
                     "ffmpeg frame {i} (t={t:.1}s) failed for {}: {e:#}",
                     video_path.display()
@@ -255,16 +282,42 @@ pub async fn generate_native(
     Ok(landed)
 }
 
+/// Monotonic counter for unique per-frame temp filenames across concurrent
+/// `generate_native` calls within one process.
+static FRAME_NONCE: AtomicU64 = AtomicU64::new(0);
+
+/// Read the just-extracted temp frame, sha1 its bytes, and install it at the
+/// content-addressed name `<sha1>.jpg`. If that file already exists (an
+/// identical frame is already cached -- from this video or another), the temp
+/// is discarded and the existing name is returned, so identical frames share
+/// one cache file. Otherwise the temp is atomically renamed into place.
+async fn finalize_content_addressed(cache_dir: &Path, tmp: &Path) -> Result<String> {
+    let bytes = tokio::fs::read(tmp)
+        .await
+        .with_context(|| format!("reading extracted frame {}", tmp.display()))?;
+    let name = format!("{}.jpg", sha1_hex_bytes(&bytes));
+    let final_path = cache_dir.join(&name);
+    if final_path.is_file() {
+        // Content duplicate already cached: drop the temp, keep the existing.
+        let _ = tokio::fs::remove_file(tmp).await;
+    } else {
+        tokio::fs::rename(tmp, &final_path)
+            .await
+            .with_context(|| format!("installing frame {}", final_path.display()))?;
+    }
+    Ok(name)
+}
+
 /// Extract one frame at timestamp `t` (seconds) from `video_path` into
-/// `cache_dir/<out_name>` as a high-quality jpeg at native resolution.
+/// `out_path` as a high-quality jpeg at native resolution. The caller owns
+/// `out_path` (a temp file) and is responsible for content-addressing it into
+/// the cache (see [`finalize_content_addressed`]) or cleaning it up on error.
 async fn extract_frame(
     ffmpeg: &str,
-    cache_dir: &Path,
     video_path: &Path,
-    out_name: &str,
+    out_path: &Path,
     t: f64,
 ) -> Result<()> {
-    let out_path = cache_dir.join(out_name);
     // -y overwrite, -ss before -i (fast keyframe seek), -frames:v 1 single
     // frame, -q:v 2 high jpeg quality, no scale (native resolution).
     let mut cmd = tokio::process::Command::new(ffmpeg);
@@ -277,7 +330,7 @@ async fn extract_frame(
         .arg("1")
         .arg("-q:v")
         .arg("2")
-        .arg(&out_path)
+        .arg(out_path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -377,14 +430,15 @@ mod tests {
 
     /// End-to-end: ffmpeg synthesises a 2s colour clip, then
     /// `thumb::generate_native` extracts `frame_count(2.0)` frames (2 frames
-    /// for a 2s clip) into the cache. Ignored by default (needs ffmpeg on PATH);
+    /// for a 2s clip) into the cache. Frames are content-addressed
+    /// (`<sha1(bytes)>.jpg`). Ignored by default (needs ffmpeg on PATH);
     /// run with `cargo test -- --ignored`.
     #[tokio::test]
     #[ignore]
     async fn generate_extracts_frame_from_synthetic_video() {
         let cache = tempfile_dir();
         let video = cache.join("clip.mp4");
-        // Generate a 2s red clip. ln(2)≈0.69 -> 1.5*0.69≈1.04 -> 2 frames.
+        // Generate a 2s red clip. frame_count(2.0) floors at 2 -> 2 frames.
         let out = tokio::process::Command::new("ffmpeg")
             .arg("-y")
             .args(["-f", "lavfi", "-i", "color=c=red:s=320x240:d=2"])
@@ -403,15 +457,25 @@ mod tests {
             .await
             .expect("generate_native");
         assert_eq!(names.len(), 2, "2s clip -> 2 frames");
-        assert_eq!(names[0], format!("{}.0.jpg", sha1_hex("clip.mp4")));
-        let thumb = cache.join(&names[0]);
-        assert!(
-            thumb.is_file(),
-            "thumbnail not written at {}",
-            thumb.display()
+        // Content-addressed: `<40-hex sha1>.jpg` (44 chars total).
+        for n in &names {
+            assert_eq!(n.len(), 44, "content-hash name {n}");
+            assert!(n.ends_with(".jpg"));
+            assert!(n.as_bytes().iter().take(40).all(|b| b.is_ascii_hexdigit()));
+            let thumb = cache.join(n);
+            assert!(thumb.is_file(), "thumbnail not written at {}", thumb.display());
+            assert!(thumb.metadata().unwrap().len() > 0);
+        }
+        // A solid-colour clip yields two identical frames, so both content-hash
+        // to the same name (and the same single cache file).
+        assert_eq!(names[0], names[1], "identical frames share one name");
+        assert_eq!(
+            cache.join(&names[0]).canonicalize().unwrap(),
+            cache.join(&names[1]).canonicalize().unwrap(),
+            "one file on disk"
         );
-        assert!(thumb.metadata().unwrap().len() > 0);
-        // A second call reuses the cached frame (no ffmpeg re-run).
+        // A second call reproduces the same content-addressed names (no ffmpeg
+        // re-run needed -- the frames are already cached).
         let names2 = generate_native("ffmpeg", &cache, &video, Some(2.0))
             .await
             .expect("generate_native2");
