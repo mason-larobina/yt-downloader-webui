@@ -1,0 +1,91 @@
+# systemd user service unit for yt-downloader-webui.
+#
+# Install:
+#   1. Build and install the binary (one of):
+#        cargo install --path .                 # -> ~/.cargo/bin/yt-downloader-webui
+#      or copy the release binary somewhere on PATH.
+#   2. Copy this file to your user unit directory:
+#        mkdir -p ~/.config/systemd/user
+#        cp examples/yt-downloader-webui.service ~/.config/systemd/user/
+#   3. Reload and enable:
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now yt-downloader-webui
+#
+# The unit runs as your user, so it inherits $HOME and can read your Firefox
+# cookies and write to ~/Downloads -- exactly what the app expects.
+#
+# Logs: the binary speaks journald natively (tracing-journald), so view with:
+#   journalctl --user -u yt-downloader-webui -f
+#   journalctl --user -u yt-downloader-webui -p warning
+#
+# The binary traps SIGTERM and shuts down gracefully (the active download is
+# flipped back to Pending and the queue is flushed), so systemd's default
+# KillSignal=SIGTERM + a generous TimeoutStopSec is the right fit.
+
+[Unit]
+Description=yt-downloader-webui (yt-dlp web UI)
+Documentation=https://github.com/mason-larobina/yt-downloader-webui
+# yt-dlp downloads need outbound network; pull it in but don't hard-fail
+# if the target is absent (e.g. offline-only hosts).
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+
+# Resolve the binary from your cargo install dir. If you installed it
+# elsewhere, either drop a copy on PATH or point this at the absolute path.
+ExecStart=%h/.cargo/bin/yt-downloader-webui
+
+# User services get a minimal PATH that omits common user bin dirs, so
+# yt-dlp / ffmpeg lookups would fail. Provide a sane default; tweak to match
+# where you installed yt-dlp and ffmpeg (e.g. /usr/local/bin, %h/.local/bin).
+#Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin:%h/.cargo/bin
+
+# --- Optional overrides (uncomment / edit as needed) ----------------------
+# The binary is configured via CLI flags (see `yt-downloader-webui --help`),
+# not env vars, so override by editing ExecStart. Common examples:
+#
+#   Download destination (default: ~/Downloads):
+ExecStart=%h/.cargo/bin/yt-downloader-webui --download-dir %h/Media/Downloads
+#
+#   Listen address (default loopback 127.0.0.1:8080; 0.0.0.0:<port> is DANGEROUS):
+#     ExecStart=%h/.cargo/bin/yt-downloader-webui --bind 127.0.0.1:8080
+#
+#   Browser cookies source (default: firefox; "none" disables):
+#     ExecStart=%h/.cargo/bin/yt-downloader-webui --cookies-from-browser firefox
+#
+#   Sleep between downloads in seconds (default: 20):
+#     ExecStart=%h/.cargo/bin/yt-downloader-webui --sleep 10
+#
+#   Verbose logs (RUST_LOG is honoured by the tracing filter):
+#     Environment=RUST_LOG=yt_downloader_webui=debug,info
+#
+# Combine multiple flags on one ExecStart line as needed.
+
+# Restart on crash, but back off so a broken yt-dlp/ffmpeg doesn't spin.
+Restart=on-failure
+RestartSec=5s
+
+# Give the worker time to finish the active download's graceful-shutdown
+# handshake (kill yt-dlp, flip item to Pending, flush queue) before SIGKILL.
+TimeoutStopSec=30s
+
+# Sandboxing for a user service. These are conservative: the app needs to read
+# browser cookies, write to ~/Downloads and its state/cache dirs, and spawn
+# yt-dlp/ffmpeg -- so we can't fully lock it down, but we restrict the rest.
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+# NoNewPrivileges is not set on user services by default (it conflicts with
+# the way the user manager runs); leaving it off here.
+
+[Install]
+WantedBy=default.target
