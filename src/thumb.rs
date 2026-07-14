@@ -165,29 +165,39 @@ fn sibling_tmp(path: &Path) -> PathBuf {
 }
 
 /// How many native frames to extract for a video of `duration` seconds.
-/// `floor(1.5 * ln(duration)) + 1`, floored at 1. The 1.5x factor gives ~50%
-/// more frames than a plain `ln(duration)` count so longer videos get a richer
-/// gallery without spamming ffmpeg. `ln` grows slowly enough on its own that no
-/// upper cap is needed (a 24h recording yields 16 frames). A short clip (<2s,
-/// `1.5*ln < 1`) yields 1 frame; a 10-min video yields 10; a 1-hour video 13.
-/// Returns 1 for unknown / non-positive durations.
+///
+/// Ported from the `screens` crate's frame-count formula: two anchors in
+/// log2 space — 10s → 2, 3600s (1h) → 16 — i.e. `2 + slope * log2(d/10)`
+/// with slope `14 / log2(360) ≈ 1.648`. Using log2 (rather than natural log)
+/// keeps the count well-behaved across the durations that actually occur:
+/// log grows slowly enough on its own that no upper cap is needed, while log2
+/// spreads frames more sensibly than the previous `1.5*ln` curve — a 1-hour
+/// video now yields 16 frames (was 13), a 10-min clip 6 (was 10), a day ~24.
+///
+/// `duration` unknown or non-positive yields 1 (a single fallback frame at
+/// t=0 — the gallery offsets need a real duration to space interior points);
+/// any positive duration is floored at 2, mirroring `screens`: a one-frame
+/// gallery is never useful (the opening frame alone rarely represents the
+/// content, so we always sample at least two interior points).
 fn frame_count(duration: Option<f64>) -> usize {
     let d = duration.filter(|d| *d > 0.0).unwrap_or(0.0);
     if d <= 0.0 {
         return 1;
     }
-    let n = (d.ln() * 1.5).floor() as i64 + 1;
-    n.max(1) as usize
+    let slope = 14.0 / 360.0f64.log2();
+    let raw = 2.0 + slope * (d / 10.0).log2();
+    raw.max(2.0).floor() as usize
 }
 
 /// Generate native (high-resolution) thumbnails from `video_path` with ffmpeg
 /// and return the cache filenames (`<sha1(basename)>.<i>.jpg`). The number of
-/// frames is `floor(1.5 * ln(duration)) + 1`, evenly spaced at
-/// `t = (i + 1) / (N + 1) * duration` for `i in 0..N` -- a logarithmic count so
-/// longer videos get proportionally (but slowly) more frames without spamming
-/// ffmpeg, and interior spacing that drops the very start (t=0, often a black
-/// intro) and the very end (t=duration, often credits/fade) while keeping the
-/// remaining frames at equal intervals.
+/// frames is the `screens`-style log2-anchored count (`frame_count`: 10s → 2,
+/// 1h → 16), evenly spaced at `t = (i + 1) / (N + 1) * duration` for `i in
+/// 0..N` -- a logarithmic count so longer videos get proportionally (but
+/// slowly) more frames without spamming ffmpeg, and interior spacing that
+/// drops the very start (t=0, often a black intro) and the very end
+/// (t=duration, often credits/fade) while keeping the remaining frames at
+/// equal intervals.
 ///
 /// Frames are extracted at native resolution (no downscale) with good jpeg
 /// quality (`-q:v 2`); each frame is a separate ffmpeg pass with an input
@@ -318,18 +328,22 @@ mod tests {
 
     #[test]
     fn frame_count_scales_with_duration() {
-        // Unknown / non-positive duration -> 1 frame.
+        // Unknown / non-positive duration -> 1 frame (single fallback).
         assert_eq!(frame_count(None), 1);
         assert_eq!(frame_count(Some(0.0)), 1);
         assert_eq!(frame_count(Some(-1.0)), 1);
-        // ln(2)≈0.69 -> 1.5*0.69≈1.04 -> floor 1 +1 = 2.
+        // Ported from `screens`: `2 + slope*log2(d/10)`, slope=14/log2(360).
+        // 10s -> 2 (anchor); anything shorter floors at 2.
         assert_eq!(frame_count(Some(2.0)), 2);
-        // ln(60)≈4.09 -> 1.5*4.09≈6.14 -> floor 6 +1 = 7.
-        assert_eq!(frame_count(Some(60.0)), 7);
-        // ln(600)≈6.40 -> 1.5*6.40≈9.60 -> floor 9 +1 = 10.
-        assert_eq!(frame_count(Some(600.0)), 10);
-        // ln(86400)â11.38 -> 1.5*11.38â17.07 -> floor 17 +1 = 18.
-        assert_eq!(frame_count(Some(86400.0)), 18);
+        assert_eq!(frame_count(Some(10.0)), 2);
+        // log2(60/10)=log2(6)≈2.585 -> 2 + 1.648*2.585≈6.26 -> 6.
+        assert_eq!(frame_count(Some(60.0)), 6);
+        // log2(60)≈5.907 -> 2 + 1.648*5.907≈11.74 -> 11.
+        assert_eq!(frame_count(Some(600.0)), 11);
+        // 1h is the upper anchor -> exactly 16.
+        assert_eq!(frame_count(Some(3600.0)), 16);
+        // log2(8640)≈13.077 -> 2 + 1.648*13.077≈23.55 -> 23.
+        assert_eq!(frame_count(Some(86400.0)), 23);
     }
 
     #[test]
