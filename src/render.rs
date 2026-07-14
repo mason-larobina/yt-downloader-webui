@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::library::LibraryFile;
 use crate::media::MediaInfo;
 use crate::parse::FlatEntry;
-use crate::state::{ItemStatus, NavThumb, Queue, QueueItem};
+use crate::state::{ItemStatus, Queue, QueueItem};
 
 /// JSON shape embedded in each probe-result card checkbox `value`, so POST
 /// /confirm can reconstruct per-video items (with titles + thumbnail URLs)
@@ -306,10 +306,6 @@ pub fn render_queue(queue: &Queue) -> String {
 #[template(path = "item.html")]
 struct ItemPage<'a> {
     id: u64,
-    /// The top-nav thumbnail strip (up to 5 cells, grid order = newest
-    /// first), centered on `id` and clamped at the queue edges. Each cell
-    /// links to its item's details page.
-    nav: Vec<NavThumb>,
     status: &'a str,
     label: &'a str,
     url: &'a str,
@@ -332,7 +328,7 @@ struct ItemPage<'a> {
 
 /// Render the full HTML document for GET /item/:id. Returns a complete
 /// `<!DOCTYPE html>` page (the handler wraps it with the text/html headers).
-pub fn render_item_page(item: &QueueItem, nav: Vec<NavThumb>) -> String {
+pub fn render_item_page(item: &QueueItem) -> String {
     let lines: Vec<String> = item
         .logs
         .iter()
@@ -340,7 +336,6 @@ pub fn render_item_page(item: &QueueItem, nav: Vec<NavThumb>) -> String {
         .collect();
     ItemPage {
         id: item.id,
-        nav,
         status: item.status.as_str(),
         // On the details page prefer the human title over the on-disk filename
         // (the filename is listed separately in the metadata) so the headline
@@ -992,7 +987,7 @@ mod item_page_tests {
         let mut it = item(ItemStatus::Done);
         it.filename = Some("Video #1.webm".into());
         it.logs.push("[download] 100%".into());
-        let html = render_item_page(&it, vec![]);
+        let html = render_item_page(&it);
 
         assert!(html.starts_with("<!DOCTYPE html>"), "full document");
         assert!(html.contains(r#"href="/static/app.css""#), "stylesheet");
@@ -1000,7 +995,6 @@ mod item_page_tests {
             html.contains(r#"<script src="/static/htmx.org-2.0.4.js">"#),
             "htmx"
         );
-        assert!(html.contains(r#"class="ip-strip""#), "top-nav strip");
         // Full thumbnail uses the cached thumbnail route.
         assert!(html.contains(r#"<img src="/thumb/thumb-abc.jpg""#));
         // Big text buttons for a finished file, with percent-encoded links.
@@ -1028,7 +1022,7 @@ mod item_page_tests {
     #[test]
     fn active_item_page_polls_logs_and_shows_cancel() {
         let it = item(ItemStatus::Active);
-        let html = render_item_page(&it, vec![]);
+        let html = render_item_page(&it);
         assert!(html.contains(r#"class="big-btn cancel"#));
         assert!(html.contains(r#"hx-post="/cancel/42""#));
         assert!(!html.contains(r#"class="big-btn view"#));
@@ -1044,7 +1038,7 @@ mod item_page_tests {
     fn failed_item_page_shows_retry_and_error() {
         let mut it = item(ItemStatus::Failed);
         it.error = Some("Video unavailable".into());
-        let html = render_item_page(&it, vec![]);
+        let html = render_item_page(&it);
         assert!(html.contains(r#"class="big-btn retry"#));
         assert!(html.contains(r#"class="big-btn delete"#));
         assert!(html.contains("Video unavailable"), "error surfaced");
@@ -1058,39 +1052,5 @@ mod item_page_tests {
         assert!(html.starts_with("<!DOCTYPE html>"));
         assert!(html.contains(r#"<a class="ip-back" href="/">"#));
         assert!(html.contains("no longer in the queue"));
-    }
-
-    /// The top-nav thumbnail strip renders one cell per window entry in grid
-    /// order, links each to its details page, highlights the current item, and
-    /// shows a placeholder cell for items without a cached thumbnail.
-    #[test]
-    fn item_page_nav_strip() {
-        let it = item(ItemStatus::Done); // id 42, thumb "thumb-abc.jpg"
-        let nav = vec![
-            NavThumb { id: 1, thumb: None },
-            NavThumb { id: 2, thumb: Some("t2.jpg".into()) },
-            NavThumb { id: 42, thumb: Some("thumb-abc.jpg".into()) },
-            NavThumb { id: 5, thumb: None },
-            NavThumb { id: 6, thumb: Some("t6.jpg".into()) },
-        ];
-        let html = render_item_page(&it, nav);
-
-        // Each cell links to its own details page.
-        assert!(html.contains(r#"<a class="ip-thumb-cell" href="/item/1""#));
-        assert!(html.contains(r#"<a class="ip-thumb-cell" href="/item/2""#));
-        assert!(html.contains(r#"<a class="ip-thumb-cell" href="/item/6""#));
-        // Only the current item is marked selected.
-        assert!(
-            html.contains(r#"<a class="ip-thumb-cell selected" href="/item/42""#),
-            "current thumb selected"
-        );
-        assert_eq!(
-            html.matches(r#"ip-thumb-cell selected"#).count(),
-            1,
-            "exactly one selected cell"
-        );
-        // Cells with a thumbnail render an <img>; cells without render a placeholder.
-        assert!(html.contains(r#"<img src="/thumb/t2.jpg""#));
-        assert!(html.contains(r#"<span class="ip-thumb-cell-ph"></span>"#));
     }
 }
