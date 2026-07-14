@@ -1,24 +1,36 @@
-//! Import / reconcile: keep the download directory and the per-item state
-//! index in sync. Runs on startup and after every successful download.
+//! Import / reconcile: keep the download directory, the per-item state
+//! index, and the thumbnail cache in sync. Runs on startup and after every
+//! successful download.
 //!
 //! 1. **Dedupe** -- at most one Done state file per on-disk video filename.
 //!    When several Done items reference the same file (e.g. an imported item
 //!    plus a later real download of the same file, or stale duplicates), the
 //!    "best" one is kept and the rest are dropped (their state files are
 //!    deleted by the next `persist::save` reconciliation).
-//! 2. **Import** -- unreferenced video files (no Done item names them) are
+//! 2. **Prune missing** -- a Done item whose on-disk video has been moved or
+//!    deleted is removed from the queue (its state file is deleted by
+//!    `persist::save`). A moved file is then re-imported in step 3 under its
+//!    new name. Pending / Active / Failed / Cancelled items are never pruned
+//!    here -- they represent attempts, not videos on disk.
+//! 3. **Import** -- unreferenced video files (no Done item names them) are
 //!    ffprobed; those with a video stream become Done items with an empty
 //!    `url` (distinguishing them from real downloads), `media` populated,
 //!    and `enqueued_at` set to the file's mtime so they sort correctly.
-//! 3. **Probe media** -- Done items missing `media` (older state files
+//! 4. **Probe media** -- Done items missing `media` (older state files
 //!    predating this feature, or a freshly-finished download) are probed and
 //!    their `duration` is filled from the probe if previously unknown.
-//! 4. **Generate thumbnails** -- Done items missing `thumbnails` get native
+//! 5. **Garbage-collect thumbs** -- cache files not referenced by any live
+//!    item's `thumbnail`/`thumbnails` are deleted: thumbs owned by pruned /
+//!    deduped items, by externally-deleted videos, or any stray cache file.
+//!    The cache dir is a pure cache, so unreferenced files are safe to drop.
+//! 6. **Generate thumbnails** -- Done items missing `thumbnails` get native
 //!    `ln(duration)` frames extracted (background, best-effort).
 //!
 //! ffprobe results are persisted on the item so we never re-probe the same
 //! file; thumbnail generation is idempotent (cache reuse) so a repeat run
-//! only fills gaps.
+//! only fills gaps. Thumb ownership: each state file owns its thumbs via the
+//! `thumbnail` (primary) + `thumbnails` (native gallery) fields; step 5
+//! enforces that no cache file outlives the state file that owns it.
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -32,10 +44,11 @@ use crate::thumb;
 /// corrupted/odd file can hang it; bound it so one bad file can't stall import.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Run the full reconcile: dedupe, import unreferenced videos, probe missing
-/// media (synchronously), then spawn background thumbnail generation for any
-/// Done item still missing its native frames. Safe to call repeatedly and
-/// concurrently -- every step is idempotent and lock-guarded.
+/// Run the full reconcile: dedupe, prune missing files, import unreferenced
+/// videos, probe missing media, garbage-collect orphan thumbnails, then spawn
+/// background thumbnail generation for any Done item still missing its native
+/// frames. Safe to call repeatedly and concurrently -- every step is
+/// idempotent and lock-guarded.
 pub async fn reconcile(state: Arc<AppState>) {
     if state.shutdown.is_cancelled() {
         return;
@@ -43,6 +56,7 @@ pub async fn reconcile(state: Arc<AppState>) {
 
     let mut changed = false;
     changed |= dedupe_done_per_filename(&state).await;
+    changed |= prune_missing_files(&state).await;
     changed |= import_unreferenced(&state).await;
     changed |= probe_missing_media(&state).await;
 
@@ -51,6 +65,11 @@ pub async fn reconcile(state: Arc<AppState>) {
         let q = state.queue.lock().await;
         state.emit(Event::Queue(render::render_queue(&q)));
     }
+
+    // Garbage-collect orphaned thumbnails (owned by pruned / deduped items or
+    // by externally-deleted videos). Runs after persist so the state dir
+    // already mirrors the pruned queue; safe to run every time.
+    garbage_collect_thumbs(&state).await;
 
     // Always run thumbnail generation -- it self-skips items that already have
     // frames, so it is cheap when there is nothing to do.
@@ -124,7 +143,57 @@ fn score_item(item: &QueueItem) -> (u8, u8, u8, i64) {
     )
 }
 
-/// Step 2: scan the download dir; for each file not referenced by any Done
+/// Step 2: prune Done items whose on-disk video has been moved or deleted.
+/// A Done item represents a video file on disk; if that file is gone the
+/// state file is stale and is removed (its state file is deleted by the next
+/// `persist::save`, and its owned thumbnails are garbage-collected in step 5).
+/// Pending / Active / Failed / Cancelled items are never pruned here -- they
+/// represent download attempts, not videos, and a failed/cancelled item may
+/// legitimately be retried. Returns true if any item was pruned.
+async fn prune_missing_files(state: &Arc<AppState>) -> bool {
+    // Set of filenames currently present in the download dir.
+    let present: std::collections::HashSet<String> = match crate::library::scan(&state.cfg.download_dir) {
+        Ok(files) => files.into_iter().map(|f| f.name).collect(),
+        Err(e) => {
+            tracing::warn!("prune: scan failed: {e}");
+            return false;
+        }
+    };
+
+    // Done items whose filename is missing on disk.
+    let to_remove: Vec<u64> = {
+        let q = state.queue.lock().await;
+        q.items
+            .iter()
+            .filter(|i| i.status == ItemStatus::Done)
+            .filter(|i| match &i.filename {
+                Some(name) => !present.contains(name),
+                None => false, // no filename -> nothing to prune (no file to own)
+            })
+            .map(|i| i.id)
+            .collect()
+    };
+
+    if to_remove.is_empty() {
+        return false;
+    }
+    let n = {
+        let mut q = state.queue.lock().await;
+        let mut n = 0;
+        for id in &to_remove {
+            if q.remove_terminal(*id) {
+                n += 1;
+            }
+        }
+        n
+    };
+    if n > 0 {
+        tracing::info!("prune: removed {n} Done item(s) whose file is missing");
+    }
+    n > 0
+}
+
+/// Step 3: scan the download dir; for each file not referenced by any Done
 /// item, ffprobe it and -- if it has a video stream -- create a Done item.
 /// Returns true if any item was imported.
 async fn import_unreferenced(state: &Arc<AppState>) -> bool {
@@ -203,7 +272,7 @@ async fn import_unreferenced(state: &Arc<AppState>) -> bool {
     true
 }
 
-/// Step 3: ffprobe Done items that have a filename but no `media` yet, and
+/// Step 4: ffprobe Done items that have a filename but no `media` yet, and
 /// fill `duration` if it was previously unknown. Returns true if any item was
 /// updated.
 async fn probe_missing_media(state: &Arc<AppState>) -> bool {
@@ -265,7 +334,62 @@ async fn probe_missing_media(state: &Arc<AppState>) -> bool {
     true
 }
 
-/// Step 4 (background): for each Done item with a present file but no native
+/// Step 5: garbage-collect the thumbnail cache. Each state file owns its
+/// thumbs via the `thumbnail` (primary) and `thumbnails` (native gallery)
+/// fields; any cache file not referenced by any live item is an orphan and
+/// is deleted. This reclaims thumbs owned by pruned / deduped items (whose
+/// videos were moved or deleted), by externally-deleted videos, and any stray
+/// cache file. In-flight temp files (`.tmp`, dotfiles) are left alone so a
+/// concurrent fetch / ffmpeg pass isn't disturbed. Safe to run every time.
+async fn garbage_collect_thumbs(state: &Arc<AppState>) {
+    // The set of thumb filenames still referenced by some live item.
+    let referenced: std::collections::HashSet<String> = {
+        let q = state.queue.lock().await;
+        let mut set = std::collections::HashSet::new();
+        for item in &q.items {
+            if let Some(name) = &item.thumbnail {
+                set.insert(name.clone());
+            }
+            for name in &item.thumbnails {
+                set.insert(name.clone());
+            }
+        }
+        set
+    };
+
+    let mut rd = match tokio::fs::read_dir(&state.cfg.cache_dir).await {
+        Ok(rd) => rd,
+        Err(e) => {
+            tracing::debug!("gc: could not read cache dir {}: {e}", state.cfg.cache_dir.display());
+            return;
+        }
+    };
+
+    let mut removed = 0u64;
+    while let Some(entry) = rd.next_entry().await.unwrap_or(None) {
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Skip in-flight temp / hidden files (never referenced by an item).
+        if name.starts_with('.') || name.ends_with(".tmp") {
+            continue;
+        }
+        if referenced.contains(&name) {
+            continue;
+        }
+        // Orphan: not owned by any live state file. Best-effort delete.
+        match tokio::fs::remove_file(entry.path()).await {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::debug!("gc: could not remove orphan thumb {name}: {e}"),
+        }
+    }
+    if removed > 0 {
+        tracing::info!("gc: removed {removed} orphaned thumbnail(s)");
+    }
+}
+
+/// Step 6 (background): for each Done item with a present file but no native
 /// frames, extract `ln(duration)` frames with ffmpeg into `thumbnails` (the
 /// item-page gallery) and set the *primary* `thumbnail` as a fallback -- only
 /// when no remote thumbnail was fetched (the remote thumb, if present, is the
