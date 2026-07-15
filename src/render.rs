@@ -247,22 +247,41 @@ impl<'a> Card<'a> {
     }
 }
 
-/// Render one video card. Only used by tests (the live path renders the
-/// whole queue via `render_queue`), so gated to `cfg(test)`.
-#[cfg(test)]
+/// Render one video card. Used both by the live targeted-SSE path
+/// ([`Event::Card`] / [`Event::CardAdded`]) and by the full-grid snapshot
+/// ([`render_queue`]); the `card.html` template root carries the stable
+/// `id="card-<id>"` + `sse-swap="card-<id>"` + `hx-swap="outerHTML"`
+/// so a card swapped in by *any* path re-binds its own listener via htmx
+/// reprocessing.
 pub fn render_card(item: &QueueItem) -> String {
     Card::from_item(item).render().unwrap_or_default()
 }
 
+/// The `"N total, M pending"` count text swapped into `#cards-count`
+/// (via the `cards-count` SSE event). Empty when the queue is empty so the
+/// span collapses (matching the old full-grid render, which omitted the
+/// count entirely for an empty queue).
+pub fn render_cards_count(total: usize, pending: usize) -> String {
+    if total == 0 {
+        String::new()
+    } else {
+        format!("{total} total, {pending} pending")
+    }
+}
+
 /// Render the cards-pane inner fragment (swapped into `#cards` via the
-/// `queue` SSE event). Cards are rendered newest-first (most recently
-/// enqueued at the top) so the latest activity is visible without scrolling.
+/// `queue` SSE event on connect / lag-recovery only). The header splits into
+/// a static title + a `#cards-count` span (itself an `sse-swap` target for
+/// the `cards-count` event), and `#cards-list` is the `card-added`
+/// `afterbegin` prepend target. Cards are rendered newest-first (most
+/// recently enqueued at the top) so the latest activity is visible without
+/// scrolling; the `"no videos yet"` empty hint is always present and hidden
+/// via CSS (`.cards-list:has(.card) .empty`) when a card exists, so removing
+/// the last card needs no extra event.
 #[derive(Template)]
 #[template(path = "queue.html")]
 struct QueueView<'a> {
-    items_empty: bool,
-    total: usize,
-    pending: usize,
+    count: String,
     cards: Vec<Card<'a>>,
 }
 
@@ -278,9 +297,7 @@ pub fn render_queue(queue: &Queue) -> String {
     let cards: Vec<Card<'_>> = queue.items.iter().rev().map(Card::from_item).collect();
 
     QueueView {
-        items_empty: queue.items.is_empty(),
-        total,
-        pending,
+        count: render_cards_count(total, pending),
         cards,
     }
     .render()
@@ -952,6 +969,70 @@ mod card_tests {
         assert!(active.contains("/thumb/t.jpg"), "thumbnail present");
         assert!(active.contains("2 queued"));
         assert!(active.contains("Hello World"), "title present");
+    }
+
+    /// Each card root carries a stable `id="card-<id>"` plus an
+    /// `sse-swap="card-<id>"` + `hx-swap="outerHTML"`, so a per-card SSE
+    /// event can replace exactly that card (and an empty payload remove it)
+    /// without touching the rest of the grid. This is the contract the
+    /// targeted-grid model (`Event::Card` / `Event::CardAdded`) depends on.
+    #[test]
+    fn card_root_has_stable_id_and_per_card_sse_swap() {
+        let html = render_card(&item(ItemStatus::Active, None));
+        assert!(
+            html.contains(r#"id="card-7" sse-swap="card-7" hx-swap="outerHTML""#),
+            "card root is its own targeted sse-swap element"
+        );
+        assert!(html.contains(r#"data-id="7""#), "data-id preserved");
+    }
+
+    /// `render_cards_count` produces the header count text, and is empty for
+    /// an empty queue (so the `#cards-count` span collapses, matching the old
+    /// full-grid render which omitted the count entirely when empty).
+    #[test]
+    fn cards_count_text() {
+        assert_eq!(render_cards_count(0, 0), "");
+        assert_eq!(render_cards_count(3, 1), "3 total, 1 pending");
+        assert_eq!(render_cards_count(5, 0), "5 total, 0 pending");
+    }
+
+    /// The full-grid snapshot (`render_queue`, swapped into `#cards` on
+    /// connect / lag-recovery) splits the header into a static title + a
+    /// `#cards-count` sse-swap target, and the list into a `#cards-list`
+    /// `card-added` prepend target -- and always renders the `.empty` hint
+    /// (hidden via CSS when a card is present). Each card in the snapshot
+    /// carries its own per-card listener so it picks up targeted updates after
+    /// the re-render.
+    #[test]
+    fn queue_snapshot_has_targeted_targets_and_empty_hint() {
+        use crate::state::Queue;
+        let mut q = Queue::new();
+        let _ = q.enqueue("https://example/v/1".into(), Some("A".into()), None);
+        let html = render_queue(&q);
+        assert!(
+            html.contains(r#"id="cards-count" class="cards-count" sse-swap="cards-count""#),
+            "count is its own sse-swap target"
+        );
+        assert!(
+            html.contains(
+                r#"id="cards-list" class="cards-list" sse-swap="card-added" hx-swap="afterbegin""#
+            ),
+            "list is the card-added prepend target"
+        );
+        assert!(
+            html.contains(r#"sse-swap="card-"#),
+            "snapshot cards carry per-card listeners"
+        );
+        assert!(html.contains("no videos yet"), "empty hint always present");
+        assert!(
+            html.contains("1 total, 1 pending"),
+            "count text present when non-empty"
+        );
+
+        // Empty queue: count text collapses, empty hint present.
+        let empty = render_queue(&Queue::new());
+        assert!(!empty.contains("total"), "no count text when empty");
+        assert!(empty.contains("no videos yet"));
     }
 }
 

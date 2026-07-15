@@ -148,7 +148,7 @@ The server owns the queue (ids, ordering, per-item state); yt-dlp output only up
 
 ### Throttling
 
-yt-dlp emits progress ticks roughly 10-20x/s. The server **throttles** emit to at most one every 200 ms (always emitting the final `finished`/`error` state). Only the **banner** (`status` event) updates on every throttle tick -- it carries the live progress bar / percent / ETA. The cards list is **not** re-rendered each tick (doing so would destroy/recreate every card's DOM every 200 ms, re-triggering the overlay fade-in and dropping `:hover` state); a `queue` swap is emitted only when a card-visible field actually changes (filename/label, error, status transition), plus a final `queue` swap on item termination.
+yt-dlp emits progress ticks roughly 10-20x/s. The server **throttles** emit to at most one every 200 ms (always emitting the final `finished`/`error` state). Only the **banner** (`status` event) updates on every throttle tick -- it carries the live progress bar / percent / ETA. The cards grid is **never** re-rendered as a whole on the hot path: each card-visible change (filename/label, error, status transition) emits a **targeted `card-<id>` swap** that replaces only that one card's `outerHTML`, and item termination emits a `card-<id>` swap + a `cards-count` swap. The full-grid `queue` swap is reserved for SSE connect (snapshot) and lag-recovery -- re-rendering every card's DOM every 200 ms would re-trigger the overlay fade-in and drop `:hover` state on any card the user is interacting with.
 
 ______________________________________________________________________
 
@@ -231,14 +231,15 @@ Deletes the named file from `cfg.download_dir` (same path-traversal guard as `/f
 `index.html` ships with the output pane already present and already wired to SSE, so every tab is live from the moment it loads -- no fragment needed from POST /download to "start" the stream:
 
 ```html
-<div id="output" hx-ext="sse" sse-connect="/events">
-  <div id="queue" sse-swap="queue" hx-swap="innerHTML"></div>
-  <div id="status" sse-swap="status" hx-swap="outerHTML"></div>
-  <div id="log">
-    <div sse-swap="log" hx-swap="beforeend"></div>
+<div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
+  <div class="cards-head"><span class="cards-title">downloads</span>
+    <span id="cards-count" class="cards-count" sse-swap="cards-count" hx-swap="innerHTML"></span>
   </div>
-  <div id="library" sse-swap="library" hx-swap="innerHTML"></div>
+  <div id="cards-list" class="cards-list" sse-swap="card-added" hx-swap="afterbegin">
+    <div class="empty">connecting&hellip;</div>
+  </div>
 </div>
+<div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>
 ```
 
 ### GET /events (SSE)
@@ -248,10 +249,13 @@ Deletes the named file from `cfg.download_dir` (same path-traversal guard as `/f
 - Thereafter emit named events whose payloads are **HTML fragments**:
   - `status` -> a fresh `<div id="status">...progress bar...</div>` (replaces) for the active item; an idle "queue empty / waiting" status when the worker parks.
   - `log` -> a `<div class="logline">...escaped text...</div>` (appended).
-  - `queue` -> the full queue list `<div id="queue">...</div>` (replaces), emitted on queue changes (items enqueued, item starts, item finishes).
-  - `library` -> the full file list `<div id="library">...</div>` (replaces), emitted when a download finishes (new file appears) or a file is deleted. On a `finished` item the worker emits this alongside the final `queue`/ `status` so the new file is immediately downloadable from any tab.
+  - `queue` -> the full cards grid `<div id="cards">...</div>` (replaces `#cards` `innerHTML`). Emitted **only on connect (snapshot) and lag-recovery** -- never on the hot path. htmx reprocesses the swapped nodes, re-binding every per-card `sse-swap` listener.
+  - `card-<id>` -> one card's HTML (replaces that card's `outerHTML`). The card root carries `id="card-<id>"` + `sse-swap="card-<id>"` + `hx-swap="outerHTML"`, so it listens only to its own event. Used for every in-place card change (status transition, filename/label, error capture, thumbnail landing); **an empty payload removes the card** (cancel-pending, delete-item).
+  - `card-added` -> one newly-enqueued (or retried) card, prepended to `#cards-list` (`afterbegin`). The card carries its own `card-<id>` listener, re-bound by htmx on insert.
+  - `cards-count` -> the `"N total, M pending"` count text (replaces `#cards-count` `innerHTML`), emitted whenever total/pending changes.
+  - `library` -> the full file list `<div id="library">...</div>` (replaces), emitted when a download finishes (new file appears) or a file is deleted. On a `finished` item the worker emits this alongside the final `card-<id>`/ `status` so the new file is immediately downloadable from any tab.
 - Every fragment is HTML-escaped server-side (log lines especially -- they come from yt-dlp and may contain `&`, `<`, quotes).
-- There is no per-job `done` event that closes the connection; per-item completion is just a `queue` swap. The connection closes only when the client disconnects (tab close) or the server shuts down.
+- There is no per-job `done` event that closes the connection; per-item completion is just a `card-<id>` swap. The connection closes only when the client disconnects (tab close) or the server shuts down.
 
 Because each event carries a complete fragment and a target+swap, this stays fully in the htmx model -- no hand-written rendering JS. (If high-frequency `status` swaps prove visually janky, the fallback is a ~10-line vanilla `EventSource` that updates a single element's `textContent`; see Sec. 11.)
 
@@ -448,7 +452,7 @@ ______________________________________________________________________
 ## 11. Risks / open questions
 
 - **`--progress-template '%(progress)j'` exact semantics.** **RESOLVED by validation against yt-dlp 2026.07.04.** Confirmed that `%(progress)j` emits exactly one JSON object per progress tick, and that `--newline` makes each tick `\n`-terminated (no `\r`), so line-based parsing in `parse.rs` works as designed. stdout carries the progress JSON plus `[generic]`/`[info]`/`[download] Destination:` info lines; stderr carries `WARNING:`/`ERROR:`. The merged stdout+stderr line stream (Sec. 4) is therefore correct. One nuance surfaced and is handled: yt-dlp prints a `status: "error"` progress JSON only for *mid-download* aborts; extraction/format failures (e.g. "Video unavailable") print `ERROR: ...` to stderr and exit non-zero with no error progress event. The worker harvests `ERROR:` lines into `item.error` so the queue row surfaces the real reason rather than a generic "exited with status 1".
-- **SSE swap churn (decided).** Status/queue/log are rendered via htmx `sse-swap` fragments from the start (Sec. 6). If re-rendering the `#status` fragment ~5x/s proves visually janky in practice, the fallback is a ~10-line vanilla `EventSource` + `textContent` update for `#status`/`#queue` only, keeping htmx for the form and `#log` appends. This is a localized change in `index.html` + a few lines of JS, not an architectural shift, and will only be taken if observed, not preemptively.
+- **SSE swap churn (decided).** Status/queue/log are rendered via htmx `sse-swap` fragments from the start (Sec. 6). The cards grid is **not** re-rendered as a whole on the hot path: each card carries a stable `id="card-<id>"` + `sse-swap="card-<id>"`, so a status transition / filename / error / thumbnail change emits a **targeted `card-<id>` swap** (one card's `outerHTML`), and a new/retried item emits a **`card-added` prepend**; the full-grid `queue` swap is reserved for SSE connect (snapshot) and lag-recovery. This avoids destroying every card's DOM (which re-triggered the `.card-overlay` opacity fade-in and dropped `:hover` state) on each card-visible change. If re-rendering the `#status` fragment ~5x/s proves visually janky in practice, the fallback is a ~10-line vanilla `EventSource` + `textContent` update for `#status` only, keeping htmx for the cards, the form, and `#log` appends. This is a localized change in `index.html` + a few lines of JS, not an architectural shift, and will only be taken if observed, not preemptively.
 - **Firefox profile lock.** Modern yt-dlp copies `cookies.sqlite` and works while Firefox is running; if an older yt-dlp errors, surface the error in the log (and document `--cookies-from-browser none` as the escape hatch).
 - **Queue identity is server-owned, not heuristic.** Unlike a batch approach that leans on yt-dlp's `Downloading video N of M` / `Destination:` strings, we assign queue ids at enqueue time and track per-item state ourselves; we only read `Destination:`/progress JSON to enrich the active item. If yt-dlp changes those strings, the queue still renders correctly -- only the optional filename field degrades.
 - **Long-lived SSE + snapshot replay.** Every tab holds an open `/events` connection for the page lifetime, and a reconnect must get a consistent `snapshot` (queue + ring buffer) under the locks. Keep the ring buffer modest (e.g. 1000 lines) and the queue cap (Sec. 8) bounded so snapshot payloads stay small. `broadcast` lag: a slow tab that falls behind the channel's capacity will get a `Lagged` error -- on reconnect it re-snapshots, so this is self-healing.

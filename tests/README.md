@@ -28,15 +28,14 @@ YT_DOWNLOADER_WEBUI_BINARY=./target/release/yt-downloader-webui PORT=18090 TIMEO
 
 ## Notes
 
-- The four network-safe scripts (`endpoints.sh`, `e2e-download.sh`,
-  `persistence-restart.sh`, `probe-ytdlp-flags.sh`) are run automatically by
-  `publish.sh` before every `cargo publish`, against a single prebuilt release
-  binary (`YT_DOWNLOADER_WEBUI_BINARY=target/release/yt-downloader-webui`).
-  `probe-flat-playlist.sh` is **not** run by `publish.sh` (it needs Firefox) —
-  run it by hand on a machine with a logged-in profile.
+- The four network-safe scripts (`endpoints.sh`, `e2e-download.sh`, `persistence-restart.sh`, `probe-ytdlp-flags.sh`) are run automatically by `publish.sh` before every `cargo publish`, against a single prebuilt release binary (`YT_DOWNLOADER_WEBUI_BINARY=target/release/yt-downloader-webui`). `probe-flat-playlist.sh` is **not** run by `publish.sh` (it needs Firefox) — run it by hand on a machine with a logged-in profile.
 
 - `e2e-download.sh` and `persistence-restart.sh` hit the network (archive.org Big Buck Bunny by default). Network speed varies; bump `TIMEOUT` if the SSE window closes before completion.
+
 - `endpoints.sh` uses a nonexistent YouTube video ID to exercise the probe failure path (error returned as a `result` event with an error + Done button, nothing enqueued); it also probes+confirms a real archive.org download to drive the cancel+retry cycle. It needs no cookies.
+
 - `probe-ytdlp-flags.sh` requires `yt-dlp` on `PATH`.
+
 - `probe-flat-playlist.sh` requires `yt-dlp` on `PATH` **and a logged-in Firefox profile** (`--cookies-from-browser firefox`); YouTube 403s anonymous, cookie-less requests, so it must be run on the operator's own machine, not in a sandbox without cookies. It writes artifacts to a temp dir and prints the path; paste the output (or the saved JSON) back to pin the parser to the real shape.
+
 - Unit tests (parser + approval-list JSON round-trip, no network) live in `src/parse.rs` and `src/render.rs` and run via `cargo test`.

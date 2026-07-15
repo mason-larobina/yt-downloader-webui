@@ -129,8 +129,10 @@ wait "$SSE" || true
 # Let server #2 self-terminate via --timeout so the run isn't left backgrounded.
 wait "$SRV2" 2>/dev/null || true
 
-echo "=== final queue event (expect 'card done') ==="
-awk '/^event: queue$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
+echo "=== final card event (expect 'card done') ==="
+# After restart the terminal transition emits a targeted `card-<id>` event
+# (not a full-grid `queue` swap), so track the last `card-` event.
+awk '/^event: card-/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
   | grep -oE 'card (done|failed)' | head
 echo "=== files in download dir ==="
 ls -la "$DL"

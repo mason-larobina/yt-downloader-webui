@@ -70,6 +70,12 @@ pub async fn reconcile(state: Arc<AppState>) {
 
     if changed {
         state.persist().await;
+        // Bulk reconciliation can touch many items at once (dedupe, prune,
+        // import unreferenced, probe media), so a single full-grid `queue`
+        // snapshot is the simplest correct reconcile. This runs only on
+        // startup and once per completed download -- not the per-tick hot
+        // path -- so it is not a flash concern. htmx reprocesses the swapped
+        // nodes, re-binding every per-card `sse-swap` listener.
         let q = state.queue.lock().await;
         state.emit(Event::Queue(render::render_queue(&q)));
     }
@@ -527,8 +533,14 @@ fn spawn_thumbnail_generation(state: Arc<AppState>) {
                 true
             };
             if landed {
+                // Targeted per-card swap: native thumbnail generation only
+                // changes this one item (its gallery + possibly the primary
+                // thumb shown on the card), so re-rendering the whole grid
+                // would needlessly flash every card.
                 let q = state.queue.lock().await;
-                state.emit(Event::Queue(render::render_queue(&q)));
+                if let Some(html) = q.get(id).map(render::render_card) {
+                    state.emit(Event::Card { id, html });
+                }
                 drop(q);
                 state.persist().await;
             }

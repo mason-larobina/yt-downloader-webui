@@ -222,15 +222,17 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
     // is fetched, a native ffmpeg-extracted frame (generated after the download)
     // acts as the fallback primary.
     let mut thumbs: Vec<(u64, String)> = Vec::new();
+    let mut added: Vec<u64> = Vec::new();
     {
         let mut q = state.queue.lock().await;
         for raw in &entries {
             match serde_json::from_str::<render::ApprovalEntry>(raw) {
                 Ok(e) => {
-                    if let Some(id) = q.enqueue(e.url, e.title, e.duration)
-                        && let Some(t) = e.thumbnail
-                    {
-                        thumbs.push((id, t));
+                    if let Some(id) = q.enqueue(e.url, e.title, e.duration) {
+                        added.push(id);
+                        if let Some(t) = e.thumbnail {
+                            thumbs.push((id, t));
+                        }
                     }
                 }
                 Err(_) => {
@@ -239,9 +241,18 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
                 }
             }
         }
+        // One targeted `card-added` prepend per newly-enqueued card -- not a
+        // full-grid `queue` swap -- so existing cards' DOM (and any `:hover`
+        // state) survive a batch enqueue. Each prepended card carries its own
+        // `sse-swap="card-<id>"` listener, re-bound by htmx on insert.
+        for id in &added {
+            if let Some(item) = q.get(*id) {
+                state.emit(Event::CardAdded(render::render_card(item)));
+            }
+        }
     }
     state.notify.notify_one();
-    emit_queue_status(&state).await;
+    emit_count_status(&state).await;
     state.persist().await;
 
     if !thumbs.is_empty() {
@@ -285,6 +296,7 @@ fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
             return;
         }
         let mut q = state.queue.lock().await;
+        let mut changed: Vec<u64> = Vec::new();
         for (id, fname) in &landed {
             if let Some(item) = q.get_mut(*id) {
                 // The remote thumbnail is the highest-quality primary; set it
@@ -292,19 +304,29 @@ fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
                 // frame already landed as a fallback).
                 if item.thumbnail.is_none() {
                     item.thumbnail = Some(fname.clone());
+                    changed.push(*id);
                 }
             }
         }
-        state.emit(Event::Queue(render::render_queue(&q)));
+        // One targeted per-card swap per changed item -- not a full-grid
+        // `queue` swap -- so the rest of the grid's DOM (and any `:hover`
+        // state) survives a thumbnail landing.
+        for id in &changed {
+            if let Some(html) = q.get(*id).map(render::render_card) {
+                state.emit(Event::Card { id: *id, html });
+            }
+        }
         drop(q);
         state.persist().await;
     });
 }
 
-/// Emit a `queue` + `status` swap together. Used by request handlers after
-/// mutating the queue so the floating banner (status: pending count / active
-/// download) stays live alongside the card list.
-async fn emit_queue_status(state: &Arc<AppState>) {
+/// Emit a `cards-count` + `status` swap together. Used by request handlers
+/// after mutating the queue so the floating banner (status: pending count /
+/// active download) stays live alongside the header count. Per-card changes
+/// (add / update / remove) are emitted by each caller separately -- this
+/// helper only refreshes the two summary targets.
+async fn emit_count_status(state: &Arc<AppState>) {
     let q = state.queue.lock().await;
     let active = q.items.iter().find(|i| i.status == ItemStatus::Active);
     let pending = q
@@ -312,7 +334,10 @@ async fn emit_queue_status(state: &Arc<AppState>) {
         .iter()
         .filter(|i| i.status == ItemStatus::Pending)
         .count();
-    state.emit(Event::Queue(render::render_queue(&q)));
+    let total = q.items.len();
+    state.emit(Event::CardsCount(render::render_cards_count(
+        total, pending,
+    )));
     state.emit(Event::Status(render::render_status(active, pending)));
 }
 
@@ -348,7 +373,15 @@ async fn post_cancel(State(state): State<Arc<AppState>>, Path(id): Path<u64>) ->
 
     match outcome {
         Outcome::PendingRemoved => {
-            emit_queue_status(&state).await;
+            // Remove the card from the grid with an empty `card-<id>` swap
+            // (outerHTML of empty data deletes the node) -- no full-grid
+            // re-render. The active-item cancel path emits its own card via
+            // the worker's `emit_final`.
+            state.emit(Event::Card {
+                id,
+                html: String::new(),
+            });
+            emit_count_status(&state).await;
             state.persist().await;
             render::render_ack(&format!("cancelled item {id}"), false)
         }
@@ -391,8 +424,25 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
             q.items.push(item);
         }
     };
+    // Render the re-queued card (now Pending, at the back of `items` = top
+    // of the newest-first grid) under the lock, then emit a remove + add pair
+    // so the card moves to the top without a full-grid re-render: an empty
+    // `card-<id>` swap deletes the old node (wherever it was), and a
+    // `card-added` prepend inserts the fresh one at the top. Net effect equals
+    // the position the full-grid render would have shown.
+    let card_html = {
+        let q = state.queue.lock().await;
+        q.get(id).map(render::render_card)
+    };
     state.notify.notify_one();
-    emit_queue_status(&state).await;
+    if let Some(html) = card_html {
+        state.emit(Event::Card {
+            id,
+            html: String::new(),
+        });
+        state.emit(Event::CardAdded(html));
+    }
+    emit_count_status(&state).await;
     state.persist().await;
     render::render_ack(&format!("requeued item {id}"), false)
 }
@@ -505,7 +555,13 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
         q.remove_terminal(id)
     };
     if removed {
-        emit_queue_status(&state).await;
+        // Remove the card with an empty `card-<id>` swap (outerHTML of empty
+        // data deletes the node) -- no full-grid re-render.
+        state.emit(Event::Card {
+            id,
+            html: String::new(),
+        });
+        emit_count_status(&state).await;
         // Refresh the library view too in case it's open elsewhere.
         let lib_frag = render::render_library_scan(&download_dir);
         state.emit(Event::Library(lib_frag));

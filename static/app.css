@@ -278,6 +278,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   gap: 16px; align-content: start;
 }
 .cards-list .empty { color: var(--muted); font-style: italic; grid-column: 1 / -1; font-weight: 500; }
+/* Hide the empty hint once any card is present (so removing the last card
+   just re-reveals it -- no extra SSE event needed). */
+.cards-list:has(.card) .empty { display: none; }
 
 /* ---------- card ---------- */
 .card {

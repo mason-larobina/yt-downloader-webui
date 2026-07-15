@@ -120,9 +120,15 @@ echo
 echo "=== /events event counts ==="
 grep -o '^event: [a-z]*' "$WORK/sse.raw" | sort | uniq -c
 echo
-echo "=== final queue event (expect 'card done') ==="
-awk '/^event: queue$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
-  | grep -oE 'card (done|failed)|cards-count">[0-9]+ total' | head
+echo "=== final card event (expect 'card done') ==="
+# The terminal transition emits a targeted `card-<id>` event (not a full-grid
+# `queue` swap), so track the last `card-` event -- its payload is the card
+# HTML, whose root class carries the new status.
+awk '/^event: card-/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
+  | grep -oE 'card (done|failed)' | head
+echo
+echo "=== last cards-count event (expect '1 total, 0 pending') ==="
+awk '/^event: cards-count$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
 echo
 echo "=== last status event (expect idle 'queue empty', NOT a 0% bar) ==="
 awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
@@ -149,6 +155,12 @@ if ! grep -q '^event: result' "$WORK/probe.raw"; then
 fi
 if ! grep -q 'card done' "$WORK/sse.raw"; then
   echo "FAIL: no 'card done' in /events stream"; fail=1
+fi
+if ! grep -q '^event: cards-count$' "$WORK/sse.raw"; then
+  echo "FAIL: no targeted cards-count event in /events stream"; fail=1
+fi
+if ! grep -q '^event: card-' "$WORK/sse.raw"; then
+  echo "FAIL: no targeted card-<id> event in /events stream"; fail=1
 fi
 if ! awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw" | grep -q 'banner idle'; then
   echo "FAIL: final status is not idle"; fail=1

@@ -146,10 +146,14 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         }
     };
 
-    // Emit a queue swap (item just went active) + initial status.
+    // Emit a per-card swap (item just went active) + count + initial status.
+    // Targeted, not a full-grid `queue` swap: re-rendering every card here
+    // would re-trigger the `.card-overlay` opacity fade-in on the active card
+    // and drop `:hover` state on any card the user is interacting with.
     {
         let q = state.queue.lock().await;
-        state.emit(Event::Queue(render::render_queue(&q)));
+        let card = q.get(item_id).map(render::render_card);
+        let total = q.items.len();
         let active = q.get(item_id).cloned();
         let pending = q
             .items
@@ -157,6 +161,12 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             .filter(|i| i.status == ItemStatus::Pending)
             .count();
         drop(q);
+        if let Some(html) = card {
+            state.emit(Event::Card { id: item_id, html });
+        }
+        state.emit(Event::CardsCount(render::render_cards_count(
+            total, pending,
+        )));
         state.emit(Event::Status(render::render_status(
             active.as_ref(),
             pending,
@@ -435,7 +445,9 @@ async fn handle_line(
 
             if need_queue {
                 let q = state.queue.lock().await;
-                state.emit(Event::Queue(render::render_queue(&q)));
+                if let Some(html) = q.get(item_id).map(render::render_card) {
+                    state.emit(Event::Card { id: item_id, html });
+                }
             }
             if need_status {
                 let q = state.queue.lock().await;
@@ -486,7 +498,9 @@ async fn handle_line(
                     }
                     if need_queue {
                         let q = state.queue.lock().await;
-                        state.emit(Event::Queue(render::render_queue(&q)));
+                        if let Some(html) = q.get(item_id).map(render::render_card) {
+                            state.emit(Event::Card { id: item_id, html });
+                        }
                     }
                 }
             }
@@ -529,11 +543,18 @@ async fn handle_line(
     }
 }
 
-/// Emit the final `status` + `queue` for an item transition (or the idle
-/// status when nothing is active). If `active_id` is given, that item is still
-/// rendered as the active status before clearing; pass None to render idle.
+/// Emit the final per-card swap + `cards-count` + `status` for an item
+/// transition (or the idle status when nothing is active). If `active_id` is
+/// given, that item's card is re-rendered at its new (terminal / re-queued)
+/// status; pass None when the item never entered the queue (spawn failure).
+///
+/// Targeted swaps instead of a full-grid `queue` swap: a terminal transition
+/// only changes one card, so re-rendering every card would needlessly
+/// re-trigger the `.card-overlay` opacity fade-in and drop `:hover` state on
+/// any card the user is interacting with. (The full `queue` snapshot is
+/// reserved for SSE connect + lag-recovery -- see `Event::Queue`.)
 async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
-    let (queue_frag, status_frag) = {
+    let (card_html, count_frag, status_frag) = {
         let q = state.queue.lock().await;
         // Only render the progress bar for an item that is *still* Active.
         // Once the item has transitioned to Done/Failed/Cancelled/Pending the
@@ -549,13 +570,19 @@ async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
             .iter()
             .filter(|i| i.status == ItemStatus::Pending)
             .count();
+        let total = q.items.len();
+        let card_html = active_id.and_then(|id| q.get(id).map(render::render_card));
         (
-            render::render_queue(&q),
+            card_html,
+            render::render_cards_count(total, pending),
             render::render_status(active.as_ref(), pending),
         )
     };
+    if let (Some(id), Some(html)) = (active_id, card_html) {
+        state.emit(Event::Card { id, html });
+    }
+    state.emit(Event::CardsCount(count_frag));
     state.emit(Event::Status(status_frag));
-    state.emit(Event::Queue(queue_frag));
 }
 
 // ---------------------------------------------------------------------------
