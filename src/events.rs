@@ -41,8 +41,6 @@ pub enum Event {
     /// Replaces all of `#cards` (the full video-card list). Snapshot /
     /// lag-recovery only -- never the hot path (see the type docs above).
     Queue(String),
-    /// Replaces `#library` (the file list).
-    Library(String),
     /// Replaces one card (id-named `card-<id>` event -> that card's
     /// `outerHTML`). An empty `html` payload removes the card (the
     /// `outerHTML` swap of empty data deletes the node). Used for every
@@ -96,7 +94,6 @@ impl Event {
         match self {
             Event::Log(_) => "log".into(),
             Event::Queue(_) => "queue".into(),
-            Event::Library(_) => "library".into(),
             Event::Card { id, .. } => format!("card-{id}").into(),
             Event::CardAdded(_) => "card-added".into(),
             Event::CardsCount(_) => "cards-count".into(),
@@ -114,7 +111,6 @@ impl Event {
         match self {
             Event::Log(s)
             | Event::Queue(s)
-            | Event::Library(s)
             | Event::CardAdded(s)
             | Event::CardsCount(s)
             | Event::StatusThumb(s)

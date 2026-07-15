@@ -38,7 +38,7 @@ fi
 wait_for_port() {
   local pid="$1"
   for _ in $(seq 1 50); do
-    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/library" >/dev/null 2>&1; then
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/header" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then return 1; fi

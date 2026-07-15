@@ -37,7 +37,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/confirm", axum::routing::post(post_confirm))
         .route("/cancel/{id}", axum::routing::post(post_cancel))
         .route("/retry/{id}", axum::routing::post(post_retry))
-        .route("/library", axum::routing::get(library::get_library))
+        .route("/rescan", axum::routing::post(post_rescan))
         .route("/file/{name}", axum::routing::get(library::get_file))
         .route("/thumb/{name}", axum::routing::get(get_thumb))
         .route("/delete/{name}", axum::routing::post(library::delete_file))
@@ -550,6 +550,20 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
     render::render_ack(&format!("requeued item {id}"), false)
 }
 
+// ------------------------------ /rescan ----------------------------------
+
+/// POST /rescan -- re-scan the download directory and reconcile it with the
+/// queue: prune Done items whose file is gone, import unreferenced videos as
+/// new Done items (cards), dedupe, and re-probe missing media. Runs the same
+/// `import::reconcile` used on startup / after each download. It runs
+/// concurrently (spawned) since it may ffprobe files; the cards grid refreshes
+/// automatically over SSE via the `queue` event reconcile emits when anything
+/// changes, so this just kicks it off and returns an ack.
+async fn post_rescan(State(state): State<Arc<AppState>>) -> String {
+    tokio::spawn(crate::import::reconcile(state.clone()));
+    render::render_ack("rescanning…", false)
+}
+
 // ------------------------------ /thumb/:name ------------------------------
 
 /// GET /thumb/:name -- stream a cached thumbnail inline (served from
@@ -694,9 +708,6 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
             html: String::new(),
         });
         emit_count_status(&state).await;
-        // Refresh the library view too in case it's open elsewhere.
-        let lib_frag = render::render_library_scan(&download_dir);
-        state.emit(Event::Library(lib_frag));
         state.persist().await;
     }
     render::render_ack(&format!("deleted item {id}{file_msg}"), false)
@@ -736,7 +747,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
     let shutdown = state.shutdown.clone();
 
     // Build the snapshot under the locks, *before* the stream starts.
-    let (queue_frag, status_evts, library_frag, log_lines) = {
+    let (queue_frag, status_evts, log_lines) = {
         let q = state.queue.lock().await;
         let active = q
             .items
@@ -754,13 +765,11 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
         let status_evts = render::status_events(active.as_ref(), pending);
         drop(q);
 
-        let library_frag = render::render_library_scan(&state.cfg.download_dir);
-
         let log_lines = {
             let ring = state.log_ring.lock().await;
             render::snapshot_log_lines(&ring.snapshot())
         };
-        (queue_frag, status_evts, library_frag, log_lines)
+        (queue_frag, status_evts, log_lines)
     };
 
     let s = stream! {
@@ -771,7 +780,6 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
         for ev in &status_evts {
             yield Ok(sse_event(ev.name(), ev.data()));
         }
-        yield Ok(sse_event("library".into(), &library_frag));
         for line in log_lines {
             yield Ok(sse_event("log".into(), &line));
         }

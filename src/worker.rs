@@ -321,10 +321,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             }
         }
     }
-    // On a finished item, refresh the library so the new file shows up.
-    let lib_frag = render::render_library_scan(&state.cfg.download_dir);
     emit_final(state, Some(item_id)).await;
-    state.emit(Event::Library(lib_frag));
     state.persist().await;
 
     // Sweep the download dir: probe the just-finished file's media + generate

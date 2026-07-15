@@ -7,7 +7,7 @@
 #   2. GET  /probe?url=... (SSE) -> streams log lines, emits a `result` event
 #      carrying one confirm card (single video)
 #   3. POST /confirm with that card's entry JSON -> enqueues, header restored
-#   4. the global /events SSE stream shows progress/queue/log/library, the
+#   4. the global /events SSE stream shows progress/queue/log, the
 #      file lands in the download dir, and the queue item reaches done.
 #
 # Run manually after changes to worker.rs / parse.rs / render.rs / server.rs.
@@ -50,7 +50,7 @@ HOME="$WORK" "$BIN" \
 SRV=$!
 wait_for_port() {
   for _ in $(seq 1 50); do
-    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/library" >/dev/null 2>&1; then return 0; fi
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$PORT/header" >/dev/null 2>&1; then return 0; fi
     if ! kill -0 "$SRV" 2>/dev/null; then return 1; fi
     sleep 0.1
   done

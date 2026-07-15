@@ -3,12 +3,12 @@
 A standalone, single-binary web wrapper around [`yt-dlp`][ytdlp]. Paste a video URL into the header, it gets queued, and a single background worker downloads it while you watch live progress in the browser. Pasting a playlist URL probes it and presents the per-video entries for you to pick from. Runs against your own home directory, reusing fresh cookies from your local Firefox profile by default so age-restricted / members-only content works.
 
 - **Single self-contained binary.** All HTML, CSS, JS, and templates are embedded at compile time — no external file dependencies at runtime, no CDN.
-- **htmx + SSE** for live updates: the queue, the active download's progress, the yt-dlp log output, and the file library are all pushed to every open tab in real time.
+- **htmx + SSE** for live updates: the queue, the active download's progress, and the yt-dlp log output are all pushed to every open tab in real time.
 - **One worker, one `yt-dlp` at a time.** Submitted URLs are appended to a global queue; a single background worker drains it. Submitting while a download is in flight never rejects — it just enqueues.
 - **Global, shared state.** Open the app in a second tab and you see the same queue and the same active download. Still single-user, no auth — a local loopback tool.
 - **Queue survives restarts.** Pending and active items are persisted to a JSON file per item; on restart an interrupted download is re-queued.
 - **Playlist support.** Pasting a playlist URL probes it (without downloading) and presents the per-video entries as confirm cards — tick a subset to enqueue only those. A single video is enqueued directly.
-- **Library view.** Every file in the download directory is listed with open / download / delete actions. The motivating use case: submit a URL from a phone, let the server fetch it with home cookies, then tap *download* to pull the finished file onto the phone.
+- **Downloads grid.** Each queued item is a card with open / download / delete actions once it finishes. The motivating use case: submit a URL from a phone, let the server fetch it with home cookies, then tap a card's *download* to pull the finished file onto the phone.
 - **Thumbnails.** Fetched during the probe (or generated from the downloaded file with ffmpeg as a fallback) and cached on disk.
 
 ## Prerequisites
@@ -84,9 +84,11 @@ Items can be cancelled (pending removal or killing the active download), retried
 
 Each item is written to its own `<unix_ts>.json` file in the state dir (atomic `.tmp` + fsync + rename). On startup every file is loaded, ordered FIFO by enqueue time, and any item previously `active` is re-queued as `pending` so an interrupted download restarts. A corrupted file is moved aside to `<name>.bad-<ts>` and skipped — the rest of the queue still loads. The state dir is reconciled to mirror the live queue: cleared / history-trimmed items' files are deleted. Per-item yt-dlp logs are persisted too, so they survive a restart.
 
-### The library
+### File serving
 
-A non-recursive scan of the download directory lists every non-hidden regular file, newest first, with open / download / delete actions. `/file/:name` streams a file (inline for in-browser preview, or as an attachment) with single-range support for media seeking on mobile. Filenames are percent-encoded in links and path-traversal-guarded on disk. The library refreshes automatically when a download finishes or a file is deleted.
+Finished downloads expose open / download / delete actions right on their card in the grid. `/file/:name` streams a file (inline for in-browser preview, or as an attachment) with single-range support for media seeking on mobile. Filenames are percent-encoded in links and path-traversal-guarded on disk.
+
+A **rescan** button in the downloads header re-runs the download-directory reconcile (the same pass that runs on startup and after each download): it prunes state for files removed out-of-band, imports newly-added videos as cards, and re-probes items missing media info. The grid refreshes automatically once the rescan completes.
 
 ## Security
 

@@ -11,14 +11,13 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::render::{esc, render_ack, render_library_scan};
+use crate::render::{esc, render_ack};
 use crate::state::AppState;
 
 /// A regular file discovered in the download directory.
 #[derive(Debug, Clone)]
 pub struct LibraryFile {
     pub name: String,
-    pub size: u64,
     pub mtime: time::OffsetDateTime,
 }
 
@@ -32,8 +31,9 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<LibraryFile>> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        // Hidden files starting with '.' are skipped (yt-dlp may write .part files).
-        if name.starts_with('.') {
+        // Skip dotfiles (hidden) and yt-dlp's partial-download fragments, which
+        // end in `.part` -- neither is a finished file to import/serve.
+        if name.starts_with('.') || name.ends_with(".part") {
             continue;
         }
         let mtime = meta
@@ -44,11 +44,7 @@ pub fn scan(dir: &Path) -> std::io::Result<Vec<LibraryFile>> {
                 time::OffsetDateTime::from_unix_timestamp(dur.as_secs() as i64).ok()
             })
             .unwrap_or_else(time::OffsetDateTime::now_utc);
-        files.push(LibraryFile {
-            name,
-            size: meta.len(),
-            mtime,
-        });
+        files.push(LibraryFile { name, mtime });
     }
     files.sort_by_key(|f| std::cmp::Reverse(f.mtime));
     Ok(files)
@@ -78,22 +74,6 @@ pub fn resolve_safe(dir: &Path, name: &str) -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-/// GET /library -- render the file list as an HTML fragment.
-pub async fn get_library(
-    axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
-) -> Response {
-    // Refreshed after downloads complete (via SSE) and on manual rescan; a
-    // stale heuristic cache could hide a just-finished file.
-    let body = render_library_scan(&state.cfg.download_dir);
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    (StatusCode::OK, headers, body).into_response()
 }
 
 /// Query params for /file/:name. `?inline=1` serves the file inline (for
@@ -212,18 +192,14 @@ fn parse_range(h: &str) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-/// POST /delete/:name -- delete a file and refresh every tab's library.
+/// POST /delete/:name -- delete a file from the download directory.
 pub async fn delete_file(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
     AxumPath(name): AxumPath<String>,
 ) -> String {
     match resolve_safe(&state.cfg.download_dir, &name) {
         Some(path) => match tokio::fs::remove_file(&path).await {
-            Ok(()) => {
-                let frag = render_library_scan(&state.cfg.download_dir);
-                state.emit(crate::events::Event::Library(frag));
-                render_ack(&format!("deleted {}", name), false)
-            }
+            Ok(()) => render_ack(&format!("deleted {}", name), false),
             Err(e) => render_ack(&format!("failed to delete {}: {}", name, e), true),
         },
         None => render_ack("no such file", true),

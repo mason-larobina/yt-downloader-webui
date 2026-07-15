@@ -271,6 +271,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .cards-title { font-weight: 800; letter-spacing: -0.01em; }
 .cards-count { color: var(--muted); font-size: 12px; font-weight: 600; }
+.cards-rescan {
+  margin-left: auto; padding: 4px 10px; font-size: 12px; font-weight: 600;
+}
 
 .cards-list {
   flex: 1 1 auto; overflow: visible; padding: 16px 16px 140px;

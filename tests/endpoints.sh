@@ -4,7 +4,7 @@
 # Covers DESIGN.md Sec. 6/9:
 #   POST /download (header -> probe-area shell), GET /probe (SSE result),
 #   POST /confirm (enqueue selected), /cancel/:id, /retry/:id
-#   GET  /library, /file/:name (inline + download, range)
+#   GET  /file/:name (inline + download, range)
 #   POST /delete/:name
 #   Path traversal: /file/.., /file/<encoded> -> 404
 #   ERROR: capture into item.error (failed item shows real yt-dlp message)
@@ -28,7 +28,7 @@ BIN="${YT_DOWNLOADER_WEBUI_BINARY:-$ROOT/target/release/yt-downloader-webui}"
 wait_for_port() {
   local port="$1"
   for _ in $(seq 1 50); do
-    if curl -s --connect-timeout 1 "http://127.0.0.1:$port/library" >/dev/null 2>&1; then
+    if curl -s --connect-timeout 1 "http://127.0.0.1:$port/header" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "$SRV" 2>/dev/null; then return 1; fi
@@ -65,9 +65,6 @@ fail=0
 check() {
   if [[ "$3" == *"$2"* ]]; then echo "ok   $1"; else echo "FAIL $1: expected '$2' in '$3'"; fail=1; fi
 }
-
-echo "=== GET /library on empty dir ==="
-curl -s "$base/library" | grep -q 'no files' && echo "ok   empty library" || { echo "FAIL: empty library"; fail=1; }
 
 echo "=== GET /header returns the input form ==="
 frag=$(curl -s "$base/header")
@@ -156,9 +153,6 @@ fi
 echo "=== create a fake file and test /file, /delete, traversal ==="
 echo "fake video data" > "$DL/sample.mp4"
 
-echo "--- GET /library (should list sample.mp4) ---"
-curl -s "$base/library" | grep -q 'sample.mp4' && echo "ok   library lists file" || { echo "FAIL: library"; fail=1; }
-
 echo "--- GET /file/sample.mp4?download=1 (attachment, content-type) ---"
 curl -s -D - -o /dev/null "$base/file/sample.mp4?download=1" | grep -i 'content-disposition: attachment' >/dev/null \
   && echo "ok   attachment" || { echo "FAIL: attachment"; fail=1; }
@@ -185,6 +179,10 @@ echo "--- POST /delete/sample.mp4 ---"
 ack=$(curl -s -X POST "$base/delete/sample.mp4")
 echo "delete ack: $ack"
 [[ -e "$DL/sample.mp4" ]] && { echo "FAIL: file still exists after delete"; fail=1; } || echo "ok   deleted"
+
+echo "=== POST /rescan (kicks reconcile; grid refreshes over SSE) ==="
+ack=$(curl -s -X POST "$base/rescan")
+check "rescan ack" "rescanning" "$ack"
 
 echo
 if [[ $fail -eq 0 ]]; then echo "PASS"; else echo "FAIL"; fi

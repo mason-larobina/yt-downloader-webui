@@ -1,8 +1,5 @@
 //! Render server-side HTML fragments for SSE events.
-use std::path::Path;
-
 use crate::events::Event;
-use crate::library::LibraryFile;
 use crate::media::MediaInfo;
 use crate::parse::FlatEntry;
 use crate::state::{ItemStatus, Queue, QueueItem};
@@ -484,47 +481,6 @@ pub fn render_log_line(line: &str) -> String {
     .unwrap_or_default()
 }
 
-// ----------------------------- #library ------------------------------------
-
-/// One library row.
-#[derive(Template)]
-#[template(path = "library_row.html")]
-struct LibraryRow<'a> {
-    name: &'a str,
-    size: String,
-    mtime: String,
-}
-
-/// Render the full `#library` fragment from a scanned file list.
-#[derive(Template)]
-#[template(path = "library.html")]
-struct LibraryView<'a> {
-    files_empty: bool,
-    n: usize,
-    rows: Vec<LibraryRow<'a>>,
-}
-
-pub fn render_library(files: &[LibraryFile]) -> String {
-    let rows: Vec<LibraryRow<'_>> = files
-        .iter()
-        .map(|f| LibraryRow {
-            name: &f.name,
-            size: human_bytes(f.size),
-            mtime: f
-                .mtime
-                .format(time::macros::format_description!("[year]-[month]-[day]"))
-                .unwrap_or_default(),
-        })
-        .collect();
-    LibraryView {
-        files_empty: files.is_empty(),
-        n: files.len(),
-        rows,
-    }
-    .render()
-    .unwrap_or_default()
-}
-
 // ----------------------------- header / probe ------------------------------
 
 /// Render the normal header input form (a single URL text field + Add
@@ -636,15 +592,6 @@ pub fn render_probe_result(
 /// fragment, then each log-line fragment (already-rendered).
 pub fn snapshot_log_lines(lines: &[&String]) -> Vec<String> {
     lines.iter().map(|l| render_log_line(l)).collect()
-}
-
-/// Convenience: render library for a path scan (used by both GET /library and
-/// the library event). Returns the fragment string.
-pub fn render_library_scan(dir: &Path) -> String {
-    match crate::library::scan(dir) {
-        Ok(files) => render_library(&files),
-        Err(_) => r#"<div id="library" class="library"><div class="err">failed to scan directory</div></div>"#.to_string(),
-    }
 }
 
 // ----------------------------- #ack ---------------------------------------
