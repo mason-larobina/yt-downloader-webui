@@ -50,7 +50,7 @@ fi
 
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-dir "$STATE" \
-  --cookies-from-browser none --bind "127.0.0.1:$PORT" \
+  --bind "127.0.0.1:$PORT" \
   --timeout 30 \
   > "$WORK/server.log" 2>&1 &
 SRV=$!

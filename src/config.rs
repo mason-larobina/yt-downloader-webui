@@ -12,15 +12,11 @@ pub struct Cli {
     #[arg(short, long, value_name = "DIR")]
     pub download_dir: Option<String>,
 
-    /// Browser to pull cookies from via --cookies-from-browser. Default: firefox.
-    /// Use "none" to disable cookies entirely.
-    #[arg(
-        short = 'b',
-        long = "cookies-from-browser",
-        value_name = "BROWSER",
-        default_value = "firefox"
-    )]
-    pub cookies_from_browser: String,
+    /// Browser to pull cookies from via --cookies-from-browser (matches the
+    /// yt-dlp flag). Optional; nothing is forwarded to yt-dlp unless set --
+    /// omit to run without cookies.
+    #[arg(short = 'b', long = "cookies-from-browser", value_name = "BROWSER")]
+    pub cookies_from_browser: Option<String>,
 
     /// Path to yt-dlp binary. Default: yt-dlp (PATH).
     #[arg(long, value_name = "PATH", default_value = "yt-dlp")]
@@ -104,11 +100,9 @@ impl Cli {
             format!("failed to create download dir: {}", download_dir.display())
         })?;
 
-        let cookies_from_browser = if self.cookies_from_browser.eq_ignore_ascii_case("none") {
-            None
-        } else {
-            Some(self.cookies_from_browser.clone())
-        };
+        // Optional: forward the browser name to yt-dlp only when explicitly set.
+        // Omit the flag entirely to run without cookies.
+        let cookies_from_browser = self.cookies_from_browser;
 
         let state_dir = match self.state_dir {
             Some(s) => expand_tilde(&s, &home),

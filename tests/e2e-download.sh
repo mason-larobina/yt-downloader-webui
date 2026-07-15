@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for the yt-downloader-webui server.
 #
-# Builds the release binary, starts the server with --cookies-from-browser none
+# Builds the release binary, starts the server with no cookies flag
 # (no Firefox in CI/sandbox), then drives the new header flow end-to-end:
 #   1. POST /download -> probe-area shell (sse-connect wired up)
 #   2. GET  /probe?url=... (SSE) -> streams log lines, emits a `result` event
@@ -44,7 +44,7 @@ echo "=== starting server on 127.0.0.1:$PORT ==="
 # self-terminates even if the test hangs; we `wait` on it for its exit status.
 HOME="$WORK" "$BIN" \
   --download-dir "$DL" --state-dir "$STATE" \
-  --cookies-from-browser none --bind "127.0.0.1:$PORT" \
+  --bind "127.0.0.1:$PORT" \
   --timeout $((TIMEOUT + 30)) \
   > "$WORK/server.log" 2>&1 &
 SRV=$!

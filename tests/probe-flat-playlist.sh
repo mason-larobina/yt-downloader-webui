@@ -26,7 +26,7 @@
 # Defaults:
 #   PLAYLIST_URL    = your YouTube playlist
 #   SINGLE_VIDEO_URL = first entry reconstructed from the playlist (auto)
-#   BROWSER         = firefox   (use "none" to skip --cookies-from-browser)
+#   BROWSER         = firefox   (leave empty to skip --cookies-from-browser)
 #
 # Requires: yt-dlp on PATH, python3, jq optional (only for pretty diffs).
 
@@ -34,14 +34,14 @@ set -euo pipefail
 
 PLAYLIST_URL="${1:-https://www.youtube.com/playlist?list=PLEueSxy2K1ZYInz4AIBbSugDZe377cILP}"
 SINGLE_VIDEO_URL="${2:-}"     # "" -> auto-derive from first playlist entry
-BROWSER="${3:-firefox}"
+BROWSER="${3:-firefox}"   # "" -> skip --cookies-from-browser
 
 DIR="$(mktemp -d -t yt-downloader-webui-probe-flat.XXXXXX)"
 #trap 'rm -rf "$DIR"' EXIT
 
 # Cookie flag, mirroring src/ytdlp.rs / src/config.rs.
 COOKIE_FLAG=()
-if [[ "$BROWSER" != "none" ]]; then
+if [[ -n "$BROWSER" ]]; then
     COOKIE_FLAG=(--cookies-from-browser "$BROWSER")
 fi
 

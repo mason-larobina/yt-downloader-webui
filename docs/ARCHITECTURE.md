@@ -13,7 +13,7 @@ ______________________________________________________________________
 - One single-line URL input in the header. Submitting (or pasting anywhere on the page -- the input catches the paste and submits immediately) swaps in a **probe area** wired to its own `GET /probe?url=…` SSE stream that runs `yt-dlp --flat-playlist -j` (fast: extraction only, no download) and streams its output live. A **playlist** is expanded into its per-video entries and returned as a list of N files **to approve** (checkboxes, approve a subset); a **single video** is enqueued for download directly. Only approved per-video items (and directly-queued single videos) are **appended to a global queue** and **persisted to one JSON file per item** so they survive restarts (see Sec. 8) -- **playlists are never persisted**: their expansion lives only in the request that produced it. A single background worker drains the queue **one URL at a time**, spawning one `yt-dlp` process per item. There is only ever one yt-dlp *download* running at any moment (a probe may run concurrently in its own SSE stream -- it writes no files); submitting while a download is in flight never rejects -- it just enqueues.
 - **Queue and live status are global and shared across all sessions/tabs.** Every connected browser sees the same queue and the same active-item progress. Still single-user, no auth (see Sec. 9).
 - Live, readable progress rendered from yt-dlp's structured progress output -- not the raw `\r`-redrawn shell status line.
-- Fresh cookies pulled from the home Firefox profile by default (`--cookies-from-browser firefox`).
+- Optional fresh cookies from a browser profile (`--cookies-from-browser <browser>`); omitted entirely unless the flag is set.
 - Configurable download directory via a flag, defaulting to `~/Downloads`.
 - **Downloads grid** of queue items (assumed to have been produced by the tool). Each finished item's card carries `[open]` (play/preview inline in the browser), `[download]` (save to the client device), and `[delete]` controls. The motivating use case: submit a URL from a phone, let the server fetch it with home cookies, then tap `[download]` on the completed card to pull the file onto the phone. See Sec. 6/7.
 
@@ -46,8 +46,8 @@ yt-downloader-webui [OPTIONS]
                                Default: ~/Downloads
   -b, --cookies-from-browser <B>  Browser to pull cookies from via
                                --cookies-from-browser (matches the yt-dlp
-                               flag). Default: firefox. Use "none" to
-                               disable cookies entirely.
+                               flag). Optional; forwarded to yt-dlp only
+                               when set. Omit to disable.
       --yt-dlp <PATH>          Path to yt-dlp binary. Default: yt-dlp (PATH).
       --ffmpeg <PATH>          Path to ffmpeg binary, used to generate a
                                thumbnail from a downloaded file when the probe
@@ -91,7 +91,7 @@ ______________________________________________________________________
 
 ## 4. yt-dlp invocation
 
-The background worker pops **one queued URL at a time** and runs one `yt-dlp` process for it. When that process exits (success or error), the worker marks the queue item done/failed and pops the next pending item; if the queue is empty it parks until a `POST /download` enqueues something. There is never more than one live yt-dlp process.
+The background worker pops **one queued URL at a time** and runs one `yt-dlp` process for it. When that process exits (success or error), the worker marks the queue item done/failed and pops the next pending item; if the queue is empty it parks until a `POST /download` enqueues something. There is never more than one live yt-dlp process. The `--cookies-from-browser` line below is included only when the flag is set.
 
 ```
 yt-dlp \
@@ -106,7 +106,7 @@ yt-dlp \
 
 Flag rationale:
 
-- `--cookies-from-browser firefox` -- reads fresh cookies from the home Firefox profile on every invocation (yt-dlp copies `cookies.sqlite`, so it works even while Firefox is open). Satisfies the "fresh cookies from home Firefox profile" requirement with zero configuration. Omitted entirely when `--cookies-from-browser none` is passed.
+- `--cookies-from-browser <browser>` -- reads fresh cookies from that browser's profile on every invocation (yt-dlp copies `cookies.sqlite`, so it works even while Firefox is open). **Optional**: forwarded to yt-dlp only when a browser is given, and omitted entirely when the flag is absent.
 - `--newline` -- forces each progress tick onto its own line instead of being redrawn with `\r`. Combined with the template below this gives us newline-terminated JSON chunks, one per tick, trivially line-parseable.
 - `--progress-template '%(progress)j'` -- replaces the human progress bar with a JSON dump of the progress dict per tick. Fields we care about: `status`, `filename`, `tmpfilename`, `downloaded_bytes`, `total_bytes`, `total_bytes_estimate`, `speed`, `eta`, `elapsed`, plus yt-dlp's preformatted `_percent`/`_percent_str`, `_speed_str`, `_eta_str`, etc.
 - `-P <dir>` -- sets the output *directory* (per yt-dlp's `paths` option), leaving yt-dlp's default filename template (`-o`) intact. A bare directory as the `--paths` value is the documented supported form and composes with the default output template, so files land directly in `<download-dir>` with yt-dlp's chosen name.
@@ -284,7 +284,7 @@ Single page, vertically stacked:
 
 ```
 +----------------------------------------------+
-| yt-downloader-webui   -> ~/Downloads   cookies: firefox    |  <- header (dir, browser, link)
+| yt-downloader-webui   -> ~/Downloads   cookies: optional   |  <- header (dir, browser, link)
 +----------------------------------------------+
 | +------------------------------------------+ |
 | | https://...                              | |  <- large <textarea>
@@ -422,7 +422,7 @@ ______________________________________________________________________
 
 ## 9. Security
 
-- **Bind loopback only by default.** `--bind` defaults to `127.0.0.1:8080`; any non-loopback value (e.g. `--bind 0.0.0.0:8080`) prints a loud warning. Anyone who can reach the server can run `yt-dlp` against arbitrary URLs (limited to what `--cookies-from-browser firefox` allows), read live download status, **download any file in your download dir to their device, and delete files** (see `/file/:name`, `/delete/:name` below) -- i.e. effectively act as your Firefox session for these sites *and* as a file server for that directory. Do not expose to a network. **Mobile use** requires reaching the loopback server: prefer a tunnel (Tailscale / SSH port-forward) so the surface stays authenticated/encrypted; `--bind 0.0.0.0:<port>` is the escape hatch and prints its warning at startup.
+- **Bind loopback only by default.** `--bind` defaults to `127.0.0.1:8080`; any non-loopback value (e.g. `--bind 0.0.0.0:8080`) prints a loud warning. Anyone who can reach the server can run `yt-dlp` against arbitrary URLs (limited to what `--cookies-from-browser <browser>`, if set, allows), read live download status, **download any file in your download dir to their device, and delete files** (see `/file/:name`, `/delete/:name` below) -- i.e. effectively act as your Firefox session for these sites *and* as a file server for that directory. Do not expose to a network. **Mobile use** requires reaching the loopback server: prefer a tunnel (Tailscale / SSH port-forward) so the surface stays authenticated/encrypted; `--bind 0.0.0.0:<port>` is the escape hatch and prints its warning at startup.
 - **No shell.** URLs are `Command::arg`s, never concatenated into a shell string -> no command injection.
 - **HTML-escape every fragment** sent over SSE; log lines are untrusted text.
 - **Path traversal guarded, not absent.** `/file/:name` and `/delete/:name` *do* let the browser name a file, but `:name` must be a bare filename (no `/`, no `..`); the resolved path is canonicalized and asserted to remain inside `cfg.download_dir`, otherwise 404. The browser cannot escape the download directory -- only read/delete files already within it. `--download-dir` itself remains a CLI flag set by the operator.
@@ -465,7 +465,7 @@ ______________________________________________________________________
 
 - **`--progress-template '%(progress)j'` exact semantics.** **RESOLVED by validation against yt-dlp 2026.07.04.** Confirmed that `%(progress)j` emits exactly one JSON object per progress tick, and that `--newline` makes each tick `\n`-terminated (no `\r`), so line-based parsing in `parse.rs` works as designed. stdout carries the progress JSON plus `[generic]`/`[info]`/`[download] Destination:` info lines; stderr carries `WARNING:`/`ERROR:`. The merged stdout+stderr line stream (Sec. 4) is therefore correct. One nuance surfaced and is handled: yt-dlp prints a `status: "error"` progress JSON only for *mid-download* aborts; extraction/format failures (e.g. "Video unavailable") print `ERROR: ...` to stderr and exit non-zero with no error progress event. The worker harvests `ERROR:` lines into `item.error` so the queue row surfaces the real reason rather than a generic "exited with status 1".
 - **SSE swap churn (decided).** Status/queue/log are rendered via htmx `sse-swap` fragments from the start (Sec. 6). **Neither** the cards grid **nor** the floating `#status` banner is re-rendered as a whole on the hot path. Each card carries a stable `id="card-<id>"` + `sse-swap="card-<id>"`, so a status transition / filename / error / thumbnail change emits a **targeted `card-<id>` swap** (one card's `outerHTML`), and a new/retried item emits a **`card-added` prepend**; the full-grid `queue` swap is reserved for SSE connect (snapshot) and lag-recovery. Symmetrically, the banner is a **static 3-column shell** (left = thumbnail, middle = 4 lines: title / last log / progress bar / progress text, right = cancel button) rendered once in `index.html`, with each slot its own `sse-swap` target (`status-thumb` / `status-title` / `status-log` / `status-bar` / `status-meta` / `status-cancel`); a progress tick swaps only the `status-bar` + `status-meta` fragments, and a log line swaps only `status-log`, so the `<img>` thumbnail is not recreated several times a second. This avoids destroying every card's DOM (which re-triggered the `.card-overlay` opacity fade-in and dropped `:hover` state) on each card-visible change, and avoids the banner's thumbnail flashing on every progress tick. The original pre-emptive fallback (a ~10-line vanilla `EventSource` + `textContent` for `#status`) is no longer needed: the targeted-slot model keeps the high-frequency swaps as tiny text/attribute fragments within the htmx model.
-- **Firefox profile lock.** Modern yt-dlp copies `cookies.sqlite` and works while Firefox is running; if an older yt-dlp errors, surface the error in the log (and document `--cookies-from-browser none` as the escape hatch).
+- **Firefox profile lock.** Modern yt-dlp copies `cookies.sqlite` and works while Firefox is running; if an older yt-dlp errors, surface the error in the log (the escape hatch is to omit `--cookies-from-browser`).
 - **Queue identity is server-owned, not heuristic.** Unlike a batch approach that leans on yt-dlp's `Downloading video N of M` / `Destination:` strings, we assign queue ids at enqueue time and track per-item state ourselves; we only read `Destination:`/progress JSON to enrich the active item. If yt-dlp changes those strings, the queue still renders correctly -- only the optional filename field degrades.
 - **Long-lived SSE + snapshot replay.** Every tab holds an open `/events` connection for the page lifetime, and a reconnect must get a consistent `snapshot` (queue + ring buffer) under the locks. Keep the ring buffer modest (e.g. 1000 lines) and the queue cap (Sec. 8) bounded so snapshot payloads stay small. `broadcast` lag: a slow tab that falls behind the channel's capacity will get a `Lagged` error -- on reconnect it re-snapshots, so this is self-healing.
 - **Cancel / abort.** Implemented in v1 (see Sec. 6 `/cancel/:id` and Sec. 8). The active item carries a `CancellationToken`; POST /cancel trips it and the worker `select!` branch `child.kill()`s the process. Pending items are removed straight from the queue without involving the worker. `[ retry ]` re-enqueues a cancelled/failed item at the back; `[ clear ]` drops terminal items.

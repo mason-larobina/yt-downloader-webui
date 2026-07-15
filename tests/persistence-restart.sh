@@ -53,7 +53,7 @@ start_server() {
   local log="$WORK/server.$1.log"
   local args=(
     --download-dir "$DL" --state-dir "$STATE"
-    --cookies-from-browser none --bind "127.0.0.1:$PORT"
+    --bind "127.0.0.1:$PORT"
   )
   [[ -n "${2:-}" ]] && args+=(--timeout "$2")
   HOME="$WORK" "$BIN" "${args[@]}" > "$log" 2>&1 &

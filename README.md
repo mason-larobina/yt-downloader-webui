@@ -15,7 +15,7 @@ A standalone, single-binary web wrapper around [`yt-dlp`][ytdlp]. Paste a video 
 
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH` (or pass `--yt-dlp`).
 - [`ffmpeg`](https://ffmpeg.org/) on `PATH` (or pass `--ffmpeg`). Optional — only used to generate thumbnails when the probe found none; a missing ffmpeg is a warning, not fatal.
-- Firefox (by default) for `--cookies-from-browser firefox`. Override with `--cookies-from-browser <browser>` or `--cookies-from-browser none` to disable cookies entirely.
+- A browser profile for `--cookies-from-browser` (e.g. `firefox`), **optional**. Omit the flag to run without cookies; otherwise pass a browser name and yt-dlp reads its cookies on every invocation.
 
 ## Build
 
@@ -41,7 +41,8 @@ yt-downloader-webui [OPTIONS]
 Options:
   -d, --download-dir <DIR>            Where yt-dlp writes files. Default: ~/Downloads
   -b, --cookies-from-browser <BROWSER> Browser cookies via --cookies-from-browser.
-                                       Default: firefox. Use "none" to disable.
+                                       Optional; forwarded to yt-dlp only when set.
+                                       Omit to disable.
       --yt-dlp <PATH>                  Path to yt-dlp binary. Default: yt-dlp (PATH).
       --ffmpeg <PATH>                  Path to ffmpeg (thumbnail fallback). Default: ffmpeg.
       --state-dir <DIR>                 Queue persistence dir (one JSON per item).
