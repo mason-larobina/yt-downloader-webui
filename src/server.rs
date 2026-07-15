@@ -31,6 +31,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         )
         .route("/static/app.css", axum::routing::get(static_css))
         .route("/static/icons/{name}", axum::routing::get(static_icon))
+        .route("/favicon.svg", axum::routing::get(favicon))
+        .route("/favicon.ico", axum::routing::get(favicon))
         .route("/download", axum::routing::post(post_download))
         .route("/probe", axum::routing::get(get_probe))
         .route("/header", axum::routing::get(get_header))
@@ -59,6 +61,12 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 const HTMX_JS: &[u8] = include_bytes!("../static/vendored/htmx.org-2.0.4.js");
 const HTMX_SSE_JS: &[u8] = include_bytes!("../static/vendored/htmx-ext-sse-2.2.4.js");
 const APP_CSS: &str = include_str!("../static/app.css");
+/// The site favicon, derived from `static/download.svg` (the download glyph on
+/// the app's violet->blue brand gradient). Served from both `/favicon.svg`
+/// and `/favicon.ico` so a browser's default `/favicon.ico` probe resolves
+/// too. `no-cache` + ETag (see `serve_embedded`) picks up an upgrade without
+/// a version-pinned URL.
+const FAVICON_SVG: &str = include_str!("../static/favicon.svg");
 
 /// Overlay-button icons, embedded at compile time and served one each from
 /// `/static/icons/{name}` so a card references them by URL instead of
@@ -194,6 +202,19 @@ async fn static_css(req: HeaderMap) -> Response {
     serve_embedded(
         APP_CSS.as_bytes(),
         "text/css; charset=utf-8",
+        CACHE_NO_CACHE,
+        &req,
+    )
+}
+
+/// GET /favicon.svg, GET /favicon.ico -- serve the embedded site favicon
+/// (an SVG derived from `download.svg`). Bound to both names so the default
+/// browser `/favicon.ico` probe resolves; the explicit `<link rel="icon">`
+/// tags in the page heads point at `/favicon.svg`.
+async fn favicon(req: HeaderMap) -> Response {
+    serve_embedded(
+        FAVICON_SVG.as_bytes(),
+        "image/svg+xml",
         CACHE_NO_CACHE,
         &req,
     )
