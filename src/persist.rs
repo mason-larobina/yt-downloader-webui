@@ -155,7 +155,8 @@ async fn load_one(path: &Path, cache_dir: &Path) -> Result<QueueItem> {
         duration: s.duration,
         filename: s.filename,
         thumbnail,
-        thumbnails: s.thumbnails
+        thumbnails: s
+            .thumbnails
             .into_iter()
             .filter(|name| cache_dir.join(name).is_file())
             .collect(),

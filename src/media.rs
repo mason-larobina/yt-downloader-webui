@@ -151,8 +151,14 @@ pub async fn probe(ffprobe: &str, path: &Path) -> Result<MediaInfo> {
 /// the primary (its codec/width/height/fps); the first `audio` stream gives
 /// the audio codec. Duration/bitrate come from the format container.
 fn parse(out: FfprobeOutput) -> MediaInfo {
-    let video = out.streams.iter().find(|s| s.codec_type.as_deref() == Some("video"));
-    let audio = out.streams.iter().find(|s| s.codec_type.as_deref() == Some("audio"));
+    let video = out
+        .streams
+        .iter()
+        .find(|s| s.codec_type.as_deref() == Some("video"));
+    let audio = out
+        .streams
+        .iter()
+        .find(|s| s.codec_type.as_deref() == Some("audio"));
 
     MediaInfo {
         duration: out.format.duration.as_deref().and_then(parse_f64),
@@ -160,7 +166,11 @@ fn parse(out: FfprobeOutput) -> MediaInfo {
         height: video.and_then(|v| v.height),
         video_codec: video.and_then(|v| v.codec_name.clone()),
         audio_codec: audio.and_then(|a| a.codec_name.clone()),
-        bit_rate: out.format.bit_rate.as_deref().and_then(|s| s.parse::<u64>().ok()),
+        bit_rate: out
+            .format
+            .bit_rate
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok()),
         fps: video.and_then(|v| {
             parse_fraction(&v.avg_frame_rate).or_else(|| parse_fraction(&v.r_frame_rate))
         }),
@@ -170,7 +180,10 @@ fn parse(out: FfprobeOutput) -> MediaInfo {
 
 /// Parse a float that may be `"12.345"` or already numeric-ish.
 fn parse_f64(s: &str) -> Option<f64> {
-    s.trim().parse::<f64>().ok().filter(|f| f.is_finite() && *f > 0.0)
+    s.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|f| f.is_finite() && *f > 0.0)
 }
 
 /// Parse a fraction string like `"30000/1001"` -> 29.97. `None` for `0/0`

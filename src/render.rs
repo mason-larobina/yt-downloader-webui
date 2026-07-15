@@ -350,10 +350,7 @@ pub fn render_item_page(item: &QueueItem) -> String {
             ))
             .unwrap_or_default(),
         media_video: item.media.as_ref().and_then(media_video_str),
-        media_audio: item
-            .media
-            .as_ref()
-            .and_then(|m| m.audio_codec.clone()),
+        media_audio: item.media.as_ref().and_then(|m| m.audio_codec.clone()),
         media_bitrate: item.media.as_ref().and_then(|m| m.bitrate_str()),
         media_format: item.media.as_ref().and_then(|m| m.format.clone()),
         polling: matches!(item.status, ItemStatus::Pending | ItemStatus::Active),
@@ -931,7 +928,9 @@ mod card_tests {
         // The captured error surfaces on the card.
         assert!(html.contains("Video unavailable"));
         // Card is still a stretched link to the details page (new tab).
-        assert!(html.contains(r#"class="card-link" href="/item/7" target="_blank" rel="noopener""#));
+        assert!(
+            html.contains(r#"class="card-link" href="/item/7" target="_blank" rel="noopener""#)
+        );
     }
 
     /// render_status idle banner is hidden; queued banner shows the count;

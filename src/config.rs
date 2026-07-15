@@ -235,9 +235,7 @@ pub fn ffmpeg_check(ffmpeg: &str) -> Result<()> {
 /// otherwise; `main` only warns on failure (import is best-effort, so a
 /// missing ffprobe just disables import rather than being fatal).
 pub fn ffprobe_check(ffprobe: &str) -> Result<()> {
-    let out = std::process::Command::new(ffprobe)
-        .arg("-version")
-        .output();
+    let out = std::process::Command::new(ffprobe).arg("-version").output();
     match out {
         Ok(o) if o.status.success() => Ok(()),
         Ok(o) => {

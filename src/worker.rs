@@ -126,13 +126,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     let _ = tokio::fs::remove_file(&sidefile).await;
 
     // Build + spawn.
-    let mut child = ytdlp::build(
-        &yt_dlp,
-        browser.as_deref(),
-        &download_dir,
-        &sidefile,
-        &url,
-    );
+    let mut child = ytdlp::build(&yt_dlp, browser.as_deref(), &download_dir, &sidefile, &url);
     let child_result = child.spawn();
     let mut child = match child_result {
         Ok(c) => c,

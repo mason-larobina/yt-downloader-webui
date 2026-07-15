@@ -160,13 +160,14 @@ fn score_item(item: &QueueItem) -> (u8, u8, u8, i64) {
 /// legitimately be retried. Returns true if any item was pruned.
 async fn prune_missing_files(state: &Arc<AppState>) -> bool {
     // Set of filenames currently present in the download dir.
-    let present: std::collections::HashSet<String> = match crate::library::scan(&state.cfg.download_dir) {
-        Ok(files) => files.into_iter().map(|f| f.name).collect(),
-        Err(e) => {
-            tracing::warn!("prune: scan failed: {e}");
-            return false;
-        }
-    };
+    let present: std::collections::HashSet<String> =
+        match crate::library::scan(&state.cfg.download_dir) {
+            Ok(files) => files.into_iter().map(|f| f.name).collect(),
+            Err(e) => {
+                tracing::warn!("prune: scan failed: {e}");
+                return false;
+            }
+        };
 
     // Done items whose filename is missing on disk.
     let to_remove: Vec<u64> = {
@@ -238,12 +239,7 @@ async fn import_unreferenced(state: &Arc<AppState>) -> bool {
             Some(p) => p,
             None => continue,
         };
-        let media = match tokio::time::timeout(
-            PROBE_TIMEOUT,
-            media::probe(ffprobe, &path),
-        )
-        .await
-        {
+        let media = match tokio::time::timeout(PROBE_TIMEOUT, media::probe(ffprobe, &path)).await {
             Ok(Ok(m)) if m.has_video() => m,
             Ok(Ok(_)) => continue, // not a video (audio/data) -- skip
             Ok(Err(e)) => {
@@ -425,7 +421,10 @@ async fn garbage_collect_thumbs(state: &Arc<AppState>) {
     let mut rd = match tokio::fs::read_dir(&state.cfg.cache_dir).await {
         Ok(rd) => rd,
         Err(e) => {
-            tracing::debug!("gc: could not read cache dir {}: {e}", state.cfg.cache_dir.display());
+            tracing::debug!(
+                "gc: could not read cache dir {}: {e}",
+                state.cfg.cache_dir.display()
+            );
             return;
         }
     };
@@ -476,9 +475,14 @@ fn spawn_thumbnail_generation(state: Arc<AppState>) {
                 .iter()
                 .filter(|i| i.status == ItemStatus::Done && i.thumbnails.is_empty())
                 .filter_map(|i| {
-                    i.filename
-                        .clone()
-                        .map(|f| (i.id, f, i.duration.or_else(|| i.media.as_ref().and_then(|m| m.duration))))
+                    i.filename.clone().map(|f| {
+                        (
+                            i.id,
+                            f,
+                            i.duration
+                                .or_else(|| i.media.as_ref().and_then(|m| m.duration)),
+                        )
+                    })
                 })
                 .collect()
         };

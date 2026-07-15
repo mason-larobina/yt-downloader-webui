@@ -274,10 +274,7 @@ pub async fn generate_native(
         }
     }
     if landed.is_empty() {
-        anyhow::bail!(
-            "no thumbnail frames extracted for {}",
-            video_path.display()
-        );
+        anyhow::bail!("no thumbnail frames extracted for {}", video_path.display());
     }
     Ok(landed)
 }
@@ -312,12 +309,7 @@ async fn finalize_content_addressed(cache_dir: &Path, tmp: &Path) -> Result<Stri
 /// `out_path` as a high-quality jpeg at native resolution. The caller owns
 /// `out_path` (a temp file) and is responsible for content-addressing it into
 /// the cache (see [`finalize_content_addressed`]) or cleaning it up on error.
-async fn extract_frame(
-    ffmpeg: &str,
-    video_path: &Path,
-    out_path: &Path,
-    t: f64,
-) -> Result<()> {
+async fn extract_frame(ffmpeg: &str, video_path: &Path, out_path: &Path, t: f64) -> Result<()> {
     // -y overwrite, -ss before -i (fast keyframe seek), -frames:v 1 single
     // frame, -q:v 2 high jpeg quality, no scale (native resolution).
     let mut cmd = tokio::process::Command::new(ffmpeg);
@@ -356,7 +348,6 @@ async fn extract_frame(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -463,7 +454,11 @@ mod tests {
             assert!(n.ends_with(".jpg"));
             assert!(n.as_bytes().iter().take(40).all(|b| b.is_ascii_hexdigit()));
             let thumb = cache.join(n);
-            assert!(thumb.is_file(), "thumbnail not written at {}", thumb.display());
+            assert!(
+                thumb.is_file(),
+                "thumbnail not written at {}",
+                thumb.display()
+            );
             assert!(thumb.metadata().unwrap().len() > 0);
         }
         // A solid-colour clip yields two identical frames, so both content-hash
