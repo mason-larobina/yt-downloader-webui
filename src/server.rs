@@ -592,6 +592,31 @@ async fn post_delete_item(State(state): State<Arc<AppState>>, Path(id): Path<u64
 
 // ------------------------------ /events (SSE) ------------------------------
 
+/// Build an SSE event from a name + data payload, ensuring the wire format
+/// always carries a `data:` field.
+///
+/// axum's `SseEvent::data("")` short-circuits in its internal `write_buf`
+/// before emitting the `data: ` prefix (it returns early on an empty buffer),
+/// so an empty payload produces `event: <name>\n\n` with **no `data:` line**.
+/// Per the SSE spec the browser's `EventSource` does not dispatch an event
+/// whose data buffer is empty (the dispatch algorithm returns early), so
+/// htmx's `sse-swap` listener never fires and the target slot is never
+/// cleared. This is why the banner kept showing stale content when the
+/// active item completed: `emit_final` emits empty `status-*` payloads to
+/// clear the slots, but the browser silently dropped them.
+///
+/// The fix: for an empty payload, emit a minimal HTML comment `<!---->`
+/// instead. It is non-empty on the wire (so the event dispatches and htmx
+/// swaps it in), produces only a comment node in the DOM (so there is no
+/// visible content), and CSS `:empty` still matches (per MDN: "Comments,
+/// processing instructions, and CSS content do not affect whether an element
+/// is considered empty"). This is centralized here so every event -- status
+/// slot clears, empty `card-<id>` removals, empty `cards-count` -- benefits.
+fn sse_event(name: std::borrow::Cow<'static, str>, data: &str) -> SseEvent {
+    let data = if data.is_empty() { "<!---->" } else { data };
+    SseEvent::default().event(name).data(data)
+}
+
 /// GET /events -- long-lived global SSE stream. Emits a snapshot on connect
 /// (queue, status, library, replayed log lines), then forwards live events.
 async fn get_events(State(state): State<Arc<AppState>>) -> Response {
@@ -629,14 +654,14 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
     let s = stream! {
         // --- snapshot ---
         yield Ok::<SseEvent, std::convert::Infallible>(
-            SseEvent::default().event("queue").data(queue_frag)
+            sse_event("queue".into(), &queue_frag)
         );
         for ev in &status_evts {
-            yield Ok(SseEvent::default().event(ev.name()).data(ev.data()));
+            yield Ok(sse_event(ev.name(), ev.data()));
         }
-        yield Ok(SseEvent::default().event("library").data(library_frag));
+        yield Ok(sse_event("library".into(), &library_frag));
         for line in log_lines {
-            yield Ok(SseEvent::default().event("log").data(line));
+            yield Ok(sse_event("log".into(), &line));
         }
 
         // --- live events ---
@@ -647,9 +672,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
                 ev = rx.recv() => {
                     match ev {
                         Ok(event) => {
-                            yield Ok(SseEvent::default()
-                                .event(event.name())
-                                .data(event.data()));
+                            yield Ok(sse_event(event.name(), event.data()));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             // Re-snapshot to self-heal: the full cards grid,
@@ -659,8 +682,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
                             // a lag.)
                             tracing::debug!("SSE lagged by {n}; re-snapshotting");
                             let q = state.queue.lock().await;
-                            yield Ok(SseEvent::default()
-                                .event("queue").data(render::render_queue(&q)));
+                            yield Ok(sse_event("queue".into(), &render::render_queue(&q)));
                             let active = q
                                 .items
                                 .iter()
@@ -671,13 +693,12 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
                                 .filter(|i| i.status == ItemStatus::Pending)
                                 .count();
                             for ev in render::status_events(active, pending) {
-                                yield Ok(SseEvent::default()
-                                    .event(ev.name()).data(ev.data()));
+                                yield Ok(sse_event(ev.name(), ev.data()));
                             }
                             drop(q);
                             let ring = state.log_ring.lock().await;
                             for line in render::snapshot_log_lines(&ring.snapshot()) {
-                                yield Ok(SseEvent::default().event("log").data(line));
+                                yield Ok(sse_event("log".into(), &line));
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

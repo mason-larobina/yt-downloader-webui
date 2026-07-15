@@ -130,7 +130,7 @@ echo
 echo "=== last cards-count event (expect '1 total, 0 pending') ==="
 awk '/^event: cards-count$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
 echo
-echo "=== last status-title event (expect empty = idle) ==="
+echo "=== last status-title event (expect 'data: <!---->' = idle, cleared) ==="
 awk '/^event: status-title$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
 echo
 echo "=== files in download dir ==="
@@ -167,11 +167,21 @@ fi
 if ! grep -q '^event: status-bar$' "$WORK/sse.raw"; then
   echo "FAIL: no targeted status-bar event in /events stream"; fail=1
 fi
-# Final state is idle: the last `status-title` slot is empty (no `bn-title`
-# span), which is what hides the banner via CSS -- not a stale 0% bar.
-if awk '/^event: status-title$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
-  | grep -q 'bn-title'; then
-  echo "FAIL: final status-title is not idle (still showing a title)"; fail=1
+# Final state is idle: the last `status-bar` and `status-title` slots must
+# be cleared. axum omits the `data:` field entirely for an empty payload,
+# and the browser does not dispatch an SSE event with no data field -- so
+# the server emits `<!---->` (a minimal comment) as the empty sentinel, which
+# is non-empty on the wire (dispatches) but matches CSS `:empty` (hides the
+# slot). Assert the last status-bar / status-title carry that sentinel,
+# proving the browser will actually clear the banner on completion (the old
+# bug: the slot was never cleared because the event was silently dropped).
+last_bar=$(awk '/^event: status-bar$/{getline d; last=d} END{print last}' "$WORK/sse.raw")
+if [[ "$last_bar" != 'data: <!---->' ]]; then
+  echo "FAIL: final status-bar is not cleared (got: '$last_bar')"; fail=1
+fi
+last_title=$(awk '/^event: status-title$/{getline d; last=d} END{print last}' "$WORK/sse.raw")
+if [[ "$last_title" != 'data: <!---->' ]]; then
+  echo "FAIL: final status-title is not idle (got: '$last_title')"; fail=1
 fi
 if [[ -z "$(find "$DL" -type f ! -name '.*' -print -quit)" ]]; then
   echo "FAIL: no file downloaded"; fail=1
