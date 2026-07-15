@@ -333,6 +333,16 @@ button:disabled { opacity: 0.5; cursor: default; }
 .card-badge.cancelled { background: var(--cancelled); }
 .card-badge.pending   { background: var(--pending); }
 
+/* duration chip (bottom-right of thumb) -- mirrors the status badge sizing
+   so the two corners read as a matched pair. Dark translucent backdrop so
+   the digits stay legible over any thumbnail. */
+.card-dur {
+  position: absolute; right: 8px; bottom: 8px;
+  font-family: monospace; font-size: 10px; font-weight: 800;
+  padding: 3px 8px; border-radius: 5px; color: var(--fg);
+  background: rgba(20,22,28,0.88); box-shadow: var(--shadow-sm);
+}
+
 /* top-right overlay action buttons */
 .card-overlay {
   position: absolute; top: 8px; right: 8px;
@@ -360,8 +370,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 14px; font-weight: 700; word-break: break-word;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.card-sub { color: var(--muted); font-size: 11px; margin-top: 4px; font-weight: 600; }
-.card-sub .dur { font-family: monospace; font-weight: 800; color: var(--fg); }
 .card-err {
   padding: 8px 12px 10px; font-size: 11px; color: var(--failed); font-weight: 600;
   word-break: break-word; border-top: 1px solid var(--line);
