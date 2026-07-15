@@ -1,6 +1,7 @@
 //! Axum router, route handlers, and the SSE stream.
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_stream::stream;
 use axum::body::{Body, Bytes};
@@ -16,6 +17,8 @@ use crate::library;
 use crate::render;
 use crate::state::{AppState, ItemStatus};
 use crate::worker;
+
+use sha1::{Digest, Sha1};
 
 /// Build the application router.
 pub fn router(state: Arc<AppState>) -> axum::Router {
@@ -50,7 +53,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 const INDEX_HTML: &str = include_str!("../static/index.html");
 // Vendored third-party JS (non-minified so it's readable / debuggable in the
 // browser). Versions are pinned in the filenames so upgrading htmx also busts
-// any browser cache. Sources:
+// any browser cache, so these are served as `immutable`. Sources:
 //   htmx.org-2.0.4.js      <- https://unpkg.com/htmx.org@2.0.4/dist/htmx.js
 //   htmx-ext-sse-2.2.4.js  <- https://unpkg.com/htmx-ext-sse@2.2.4/dist/sse.js
 const HTMX_JS: &[u8] = include_bytes!("../static/vendored/htmx.org-2.0.4.js");
@@ -70,61 +73,141 @@ const ICONS: &[(&str, &str)] = &[
     ("retry.svg", include_str!("../static/retry.svg")),
 ];
 
-async fn index(State(_state): State<Arc<AppState>>) -> Response {
-    // Static page; all dynamic state arrives via SSE.
+/// Cache policy for the compile-time-embedded entry document and CSS.
+/// Their filenames are *not* version-pinned (unlike the vendored JS), so an
+/// upgrade ships new bytes under the same URL -- hence `no-cache`, which
+/// forces the browser to revalidate every load. A stable `ETag` (sha1 of the
+/// embedded bytes) makes those revalidations cheap 304s instead of full
+/// re-downloads. `index.html` must never be served stale: a stale index
+/// references the *old* pinned JS filenames, which no longer exist on a new
+/// binary and would 404.
+const CACHE_NO_CACHE: &str = "no-cache";
+/// Cache policy for assets whose URL is immutable for the life of the binary:
+/// the version-pinned vendored JS (`/static/htmx*`) and the content-addressed
+/// thumbnails (`/thumb/<sha1>.<ext>`). `immutable` lets browsers keep them
+/// indefinitely without revalidating.
+const CACHE_IMMUTABLE: &str = "public, max-age=31536000, immutable";
+/// Cache policy for the compile-time-embedded overlay icons: stable names but
+/// only a 1-day window so an upgrade clears stale icons reasonably soon
+/// without forcing revalidation on every nav. The icon set is tiny, so this
+/// conservative TTL costs nothing.
+const CACHE_ICONS: &str = "public, max-age=86400";
+
+/// Memoized ETags for compile-time-embedded assets, keyed by the asset's
+/// `&'static` slice address (stable for the program lifetime, so the pointer
+/// is a safe cache key). Computing sha1 of e.g. the 165 KB htmx bundle on every
+/// request would be wasteful; the hash is computed once and reused.
+static ASSET_ETAGS: LazyLock<Mutex<HashMap<usize, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Return a strong, quoted ETag (sha1 hex of `data`) for a compile-time-
+/// embedded asset, computing it once and memoizing it for subsequent requests.
+fn asset_etag(data: &'static [u8]) -> String {
+    let key = data.as_ptr() as usize;
+    let mut map = ASSET_ETAGS.lock().expect("asset etag map poisoned");
+    if let Some(tag) = map.get(&key) {
+        return tag.clone();
+    }
+    let mut h = Sha1::new();
+    h.update(data);
+    let tag = format!("\"{}\"", crate::thumb::hex(&h.finalize()));
+    map.insert(key, tag.clone());
+    tag
+}
+
+/// Serve a compile-time-embedded asset with a memoized `ETag`, honoring
+/// `If-None-Match` (returns 304 on a match) and the given `Cache-Control`.
+/// `content_type` is a `&'static str` so it can be inserted via
+/// `HeaderValue::from_static` (no allocation).
+fn serve_embedded(
+    data: &'static [u8],
+    content_type: &'static str,
+    cache_control: &'static str,
+    req: &HeaderMap,
+) -> Response {
+    let etag = asset_etag(data);
+    if let Some(inm) = req.get(header::IF_NONE_MATCH)
+        && inm.as_bytes() == etag.as_bytes()
+    {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(cache_control),
+        );
+        return (StatusCode::NOT_MODIFIED, headers).into_response();
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    (StatusCode::OK, headers, Body::from(data)).into_response()
+}
+
+/// Wrap a dynamically-rendered HTML fragment with `Cache-Control: no-store` so
+/// an intermediary or browser can't heuristically cache a polled fragment
+/// (e.g. `/logs/:id`, polled every 2s) and serve a stale swap.
+fn no_store_html(body: String) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    (StatusCode::OK, headers, INDEX_HTML).into_response()
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    (StatusCode::OK, headers, body).into_response()
 }
 
-async fn static_htmx() -> Response {
-    bytes_response(HTMX_JS, "application/javascript; charset=utf-8")
+async fn index(State(_state): State<Arc<AppState>>, req: HeaderMap) -> Response {
+    // Static page; all dynamic state arrives via SSE. `no-cache` + ETag so a
+    // returning browser after an upgrade never renders a stale index that
+    // references the old (now-404) pinned JS filenames.
+    serve_embedded(
+        INDEX_HTML.as_bytes(),
+        "text/html; charset=utf-8",
+        CACHE_NO_CACHE,
+        &req,
+    )
 }
 
-async fn static_sse() -> Response {
-    bytes_response(HTMX_SSE_JS, "application/javascript; charset=utf-8")
+async fn static_htmx(req: HeaderMap) -> Response {
+    serve_embedded(
+        HTMX_JS,
+        "application/javascript; charset=utf-8",
+        CACHE_IMMUTABLE,
+        &req,
+    )
 }
 
-async fn static_css() -> Response {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/css; charset=utf-8"),
-    );
-    (StatusCode::OK, headers, APP_CSS).into_response()
+async fn static_sse(req: HeaderMap) -> Response {
+    serve_embedded(
+        HTMX_SSE_JS,
+        "application/javascript; charset=utf-8",
+        CACHE_IMMUTABLE,
+        &req,
+    )
+}
+
+async fn static_css(req: HeaderMap) -> Response {
+    serve_embedded(
+        APP_CSS.as_bytes(),
+        "text/css; charset=utf-8",
+        CACHE_NO_CACHE,
+        &req,
+    )
 }
 
 /// GET /static/icons/:name -- serve one of the compile-time-embedded overlay
-/// icon SVGs (see `ICONS`). Cacheable for a day; returns 404 for unknown
-/// names so the route can't be abused to probe the filesystem.
-async fn static_icon(Path(name): Path<String>) -> Response {
+/// icon SVGs (see `ICONS`). Cacheable for a day with a memoized `ETag` for
+/// cheap 304s; returns 404 for unknown names so the route can't be abused to
+/// probe the filesystem.
+async fn static_icon(Path(name): Path<String>, req: HeaderMap) -> Response {
     match ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b) {
-        Some(body) => {
-            let mut headers = HeaderMap::new();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("image/svg+xml"),
-            );
-            headers.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=86400"),
-            );
-            (StatusCode::OK, headers, body).into_response()
-        }
+        Some(body) => serve_embedded(body.as_bytes(), "image/svg+xml", CACHE_ICONS, &req),
         None => StatusCode::NOT_FOUND.into_response(),
     }
-}
-
-fn bytes_response(data: &'static [u8], content_type: &str) -> Response {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(content_type).unwrap(),
-    );
-    (StatusCode::OK, headers, Body::from(data)).into_response()
 }
 
 // ------------------------------ /download ----------------------------------
@@ -154,8 +237,8 @@ async fn post_download(
 
 /// GET /header -- return the normal header input form (used by cancel/done
 /// buttons in the probe area to restore the header into `#header-input`).
-async fn get_header() -> String {
-    render::render_header_input(None)
+async fn get_header() -> Response {
+    no_store_html(render::render_header_input(None))
 }
 
 // ------------------------------ /probe -------------------------------------
@@ -473,12 +556,34 @@ async fn post_retry(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> 
 /// `cfg.cache_dir`). `:name` must be a bare filename; the path is resolved and
 /// asserted to stay inside the cache dir, otherwise 404 (never an error that
 /// leaks whether a path outside the dir exists). Thumbnails are small, so no
-/// range support -- just stream the bytes.
-async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+/// range support -- just stream the bytes. The filename is content-addressed
+/// (`<sha1>.<ext>`), so the URL is immutable for life of the cache entry --
+/// served with `immutable`. The bare name doubles as the ETag, giving free
+/// 304s on revalidation (and after a cache clear, the same bytes land under
+/// the same name again).
+async fn get_thumb(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    req: HeaderMap,
+) -> Response {
     let path = match crate::thumb::resolve(&state.cfg.cache_dir, &name) {
         Some(p) => p,
         None => return StatusCode::NOT_FOUND.into_response(),
     };
+    // The content-addressed name is the natural ETag; check it before the
+    // disk read so a revalidation is a free 304 with no I/O.
+    let etag = format!("\"{}\"", name);
+    if let Some(inm) = req.get(header::IF_NONE_MATCH)
+        && inm.as_bytes() == etag.as_bytes()
+    {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(CACHE_IMMUTABLE),
+        );
+        return (StatusCode::NOT_MODIFIED, headers).into_response();
+    }
     let bytes = match tokio::fs::read(&path).await {
         Ok(b) => b,
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -496,9 +601,10 @@ async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>)
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)).unwrap(),
     );
+    headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static(CACHE_IMMUTABLE),
     );
     (StatusCode::OK, headers, Body::from(bytes)).into_response()
 }
@@ -510,12 +616,15 @@ async fn get_thumb(State(state): State<Arc<AppState>>, Path(name): Path<String>)
 /// in flight). Returns an empty `(no output yet)` body when the item has
 /// been cleared from the queue, so the poll degrades gracefully instead of
 /// swapping in a full-page fragment.
-async fn get_logs(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> String {
+async fn get_logs(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Response {
     let item = state.queue.lock().await.get(id).cloned();
-    match item {
+    let body = match item {
         Some(item) => render::render_log_lines(&item.logs),
         None => render::render_log_lines(&[]),
-    }
+    };
+    // Polled every 2s while in flight; never serve a stale swap from a
+    // heuristic cache.
+    no_store_html(body)
 }
 
 // ------------------------------ /item/:id ---------------------------------
@@ -537,6 +646,9 @@ async fn get_item_page(State(state): State<Arc<AppState>>, Path(id): Path<u64>) 
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
+    // Standalone page whose contents (logs, status) change as the item
+    // progresses; never serve a stale snapshot.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     (StatusCode::OK, headers, body).into_response()
 }
 

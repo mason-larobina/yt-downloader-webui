@@ -83,8 +83,17 @@ pub fn resolve_safe(dir: &Path, name: &str) -> Option<PathBuf> {
 /// GET /library -- render the file list as an HTML fragment.
 pub async fn get_library(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<AppState>>,
-) -> String {
-    render_library_scan(&state.cfg.download_dir)
+) -> Response {
+    // Refreshed after downloads complete (via SSE) and on manual rescan; a
+    // stale heuristic cache could hide a just-finished file.
+    let body = render_library_scan(&state.cfg.download_dir);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    (StatusCode::OK, headers, body).into_response()
 }
 
 /// Query params for /file/:name. `?inline=1` serves the file inline (for
