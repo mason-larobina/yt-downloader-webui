@@ -36,9 +36,24 @@
 
 </div>
 
-<!-- Floating progress banner (spotify-like). Swapped live by the `status`
-     SSE event; hidden via the `idle` class when the queue is empty. -->
-<div id="status" class="banner idle" sse-swap="status" hx-swap="outerHTML"></div>
+<!-- Floating progress banner (spotify-like). A stable 3-column shell
+     (never swapped on the hot path): left = thumbnail, middle = 4 lines
+     (title / last log line / progress bar / progress text), right = cancel
+     button. Each slot is its own `sse-swap` target so a progress tick swaps
+     only the bar + meta fragments -- never the `<img>` thumbnail, which is
+     what flashed when the whole `#status` `outerHTML` was swapped several
+     times a second. Empty slots collapse via CSS `:empty`, and an empty
+     `#status-title` hides the whole banner (the idle state). -->
+<div id="status" class="banner">
+  <div id="status-thumb" sse-swap="status-thumb" hx-swap="innerHTML"></div>
+  <div class="bn-middle">
+    <div class="bn-top" id="status-title" sse-swap="status-title" hx-swap="innerHTML"></div>
+    <div class="bn-log" id="status-log" sse-swap="status-log" hx-swap="innerHTML"></div>
+    <div class="bn-bar" id="status-bar" sse-swap="status-bar" hx-swap="innerHTML"></div>
+    <div class="bn-meta" id="status-meta" sse-swap="status-meta" hx-swap="innerHTML"></div>
+  </div>
+  <div id="status-cancel" sse-swap="status-cancel" hx-swap="innerHTML"></div>
+</div>
 
 <!-- Transient ack toast: cancel/retry/delete actions swap a short
      confirmation here; auto-cleared after a few seconds. -->

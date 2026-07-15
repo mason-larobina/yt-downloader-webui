@@ -1,6 +1,7 @@
 //! Render server-side HTML fragments for SSE events.
 use std::path::Path;
 
+use crate::events::Event;
 use crate::library::LibraryFile;
 use crate::media::MediaInfo;
 use crate::parse::FlatEntry;
@@ -106,116 +107,169 @@ fn human_duration(secs: Option<f64>) -> String {
 
 use askama::Template;
 
-/// Render the `#status` fragment: a spotify-like floating banner at the
-/// bottom of the viewport showing the active download's thumbnail, title,
-/// latest yt-dlp log line, a (bigger) progress bar, duration/ETA and
-/// speed/bytes, plus a live count of pending items. When nothing is active
-/// but items are queued, it shows a compact "N queued — waiting" line; when
-/// the queue is fully idle it renders an empty (hidden) banner.
-///
-/// `pending` is the number of Pending items (drives the live queued count).
-#[derive(Template)]
-#[template(path = "status.html")]
-struct Status<'a> {
-    /// "idle" | "queued" | "active"
-    state: &'a str,
-    pending: usize,
-    // active-only (unused for idle/queued):
-    label: &'a str,
-    thumb_name: Option<&'a str>,
-    last_log: Option<&'a str>,
-    /// Pre-formatted "100" (no decimals) width string for the progress bar.
-    width: String,
-    /// Pre-formatted "73" percent string.
-    percent: String,
-    /// "dur · ETA m:ss" / "".
-    left: String,
-    /// "speed · bytes" / "".
-    right: String,
+/**
+ * Render the `#status` banner fragments. The banner is a stable 3-column
+ * shell rendered once in `index.html` (left = thumbnail, middle = 4 lines:
+ * title / last log / progress bar / progress text, right = cancel button);
+ * each slot is its own `sse-swap` target so a progress tick swaps only the
+ * bar + meta fragments -- never the `<img>` thumbnail, which is what flashed
+ * when the whole `#status` `outerHTML` was swapped several times a second.
+ *
+ * Each field below is the **innerHTML** of one slot (an empty string
+ * collapses the slot via CSS `:empty`; an empty `title` hides the whole
+ * banner -- the idle state). [`status_events`] wraps the six fields as
+ * ready-to-emit [`Event`]s for the snapshot / structural-transition paths;
+ * the hot path builds a `StatusParts` and emits only the fields that
+ * actually changed (bar + meta on a progress tick, log on a log line).
+ *
+ * `pending` is the number of Pending items (drives the live queued badge).
+ */
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StatusParts {
+    /// `<img class="bn-img" ...>` / placeholder `<div>` / "".
+    pub thumb: String,
+    /// `<span class="bn-title">…</span>` (+ optional queued badge) / "".
+    pub title: String,
+    /// `<div class="bn-log">…</div>` / "".
+    pub log: String,
+    /// `<i style="width:X%"></i>` / "".
+    pub bar: String,
+    /// `<span class="bn-left">…</span><span class="bn-pct">…</span><span
+    /// class="bn-right">…</span>` / "".
+    pub meta: String,
+    /// `<button class="bn-cancel" hx-post="/cancel/<id>">…</button>` / "".
+    pub cancel: String,
 }
 
-pub fn render_status(active: Option<&QueueItem>, pending: usize) -> String {
-    // Fully idle: hide the banner.
-    if active.is_none() && pending == 0 {
-        return Status {
-            state: "idle",
-            pending,
-            label: "",
-            thumb_name: None,
-            last_log: None,
-            width: String::new(),
-            percent: String::new(),
-            left: String::new(),
-            right: String::new(),
+impl StatusParts {
+    /// Compute the six banner-slot fragments for the current `(active,
+    /// pending)` state. Cheap enough to call on every throttled progress tick;
+    /// callers emit only the subset that actually changed.
+    pub fn new(active: Option<&QueueItem>, pending: usize) -> Self {
+        // Fully idle: nothing active and nothing queued. Every slot empty --
+        // the empty `title` hides the whole banner via CSS.
+        if active.is_none() && pending == 0 {
+            return Self::default();
         }
-        .render()
-        .unwrap_or_default();
-    }
 
-    // Nothing active yet, but items are waiting.
-    if active.is_none() {
-        return Status {
-            state: "queued",
-            pending,
-            label: "",
-            thumb_name: None,
-            last_log: None,
-            width: String::new(),
-            percent: String::new(),
-            left: String::new(),
-            right: String::new(),
+        // Queued: nothing active yet, but items are waiting. Show only the
+        // title line ("Waiting… N queued"); the other slots stay empty so
+        // their columns / lines collapse and the banner reads as a compact
+        // one-liner.
+        if active.is_none() {
+            return Self {
+                title: format!(
+                    "<span class=\"bn-title\">Waiting&hellip;</span>\
+                     <span class=\"bn-queued\">{pending} queued</span>"
+                ),
+                ..Self::default()
+            };
         }
-        .render()
-        .unwrap_or_default();
-    }
 
-    let item = active.unwrap();
-    let label = item.label();
-    let p = item.progress.as_ref();
-    let percent = p.and_then(|p| p.percent()).unwrap_or(0.0);
-    let width = percent.clamp(0.0, 100.0);
-    let speed = human_speed(p.and_then(|p| p.speed));
-    let eta = human_eta(p.and_then(|p| p.eta));
-    let bytes = p.and_then(|p| {
-        let dl = p.downloaded_bytes? as u64;
-        let tot = p.total_bytes.or(p.total_bytes_estimate).map(|x| x as u64);
-        Some(match tot {
-            Some(tot) if tot > 0 => format!("{} / {}", human_bytes(dl), human_bytes(tot)),
-            _ => human_bytes(dl),
-        })
-    });
-    let dur = human_duration(item.duration);
+        let item = active.unwrap();
+        let p = item.progress.as_ref();
+        let percent = p.and_then(|p| p.percent()).unwrap_or(0.0);
+        let width = percent.clamp(0.0, 100.0);
+        let speed = human_speed(p.and_then(|p| p.speed));
+        let eta = human_eta(p.and_then(|p| p.eta));
+        let bytes = p.and_then(|p| {
+            let dl = p.downloaded_bytes? as u64;
+            let tot = p.total_bytes.or(p.total_bytes_estimate).map(|x| x as u64);
+            Some(match tot {
+                Some(tot) if tot > 0 => format!("{} / {}", human_bytes(dl), human_bytes(tot)),
+                _ => human_bytes(dl),
+            })
+        });
+        let dur = human_duration(item.duration);
 
-    let mut left_bits: Vec<String> = Vec::new();
-    if !dur.is_empty() {
-        left_bits.push(dur);
-    }
-    if !eta.is_empty() {
-        left_bits.push(format!("ETA {eta}"));
-    }
-    let mut right_bits: Vec<String> = Vec::new();
-    if !speed.is_empty() {
-        right_bits.push(speed);
-    }
-    if let Some(b) = bytes.as_ref().filter(|b| !b.is_empty()) {
-        right_bits.push(b.clone());
-    }
+        let mut left_bits: Vec<String> = Vec::new();
+        if !dur.is_empty() {
+            left_bits.push(dur);
+        }
+        if !eta.is_empty() {
+            left_bits.push(format!("ETA {eta}"));
+        }
+        let mut right_bits: Vec<String> = Vec::new();
+        if !speed.is_empty() {
+            right_bits.push(speed);
+        }
+        if let Some(b) = bytes.as_ref().filter(|b| !b.is_empty()) {
+            right_bits.push(b.clone());
+        }
 
-    let last_log = item.logs.last().map(|l| l.trim_end_matches('\n'));
+        let thumb = match item.thumbnail.as_deref() {
+            Some(name) => format!(
+                "<img class=\"bn-img\" src=\"/thumb/{}\" alt=\"\" loading=\"lazy\">",
+                esc(name)
+            ),
+            None => r#"<div class="bn-img bn-img-placeholder"></div>"#.to_string(),
+        };
 
-    Status {
-        state: "active",
-        pending,
-        label,
-        thumb_name: item.thumbnail.as_deref(),
-        last_log,
-        width: format!("{width:.0}"),
-        percent: format!("{percent:.0}"),
-        left: left_bits.join(" &middot; "),
-        right: right_bits.join(" &middot; "),
+        let mut title = format!("<span class=\"bn-title\">{}</span>", esc(item.label()));
+        if pending > 0 {
+            title.push_str(&format!(
+                "<span class=\"bn-queued\">{pending} queued</span>"
+            ));
+        }
+
+        let log = item
+            .logs
+            .last()
+            .map(|l| {
+                format!(
+                    "<div class=\"bn-log\">{}</div>",
+                    esc(l.trim_end_matches('\n'))
+                )
+            })
+            .unwrap_or_default();
+
+        let bar = format!("<i style=\"width:{width:.0}%\"></i>");
+
+        let meta = format!(
+            "<span class=\"bn-left\">{}</span>\
+             <span class=\"bn-pct\">{percent:.0}%</span>\
+             <span class=\"bn-right\">{}</span>",
+            left_bits.join(" &middot; "),
+            right_bits.join(" &middot; "),
+        );
+
+        let cancel = format!(
+            "<button class=\"bn-cancel\" hx-post=\"/cancel/{id}\" \
+             hx-target=\"#ack\" hx-swap=\"innerHTML\" \
+             title=\"cancel download\">\
+             <img class=\"bn-cancel-icon\" src=\"/static/icons/stop.svg\" \
+             alt=\"\" width=\"16\" height=\"16\" loading=\"lazy\">\
+             <span class=\"bn-cancel-text\">cancel</span></button>",
+            id = item.id,
+        );
+
+        Self {
+            thumb,
+            title,
+            log,
+            bar,
+            meta,
+            cancel,
+        }
     }
-    .render()
-    .unwrap_or_default()
+}
+
+/// The six banner-slot fragments wrapped as ready-to-emit [`Event`]s, in slot
+/// order (thumb, title, log, bar, meta, cancel). Used by the snapshot (SSE
+/// connect), lag-recovery, and every structural transition (active item
+/// change, idle↔queued↔active) -- i.e. every path that may change *any* slot.
+/// The progress-tick / log-line hot path builds a [`StatusParts`] directly and
+/// emits only the one or two fields that actually changed.
+pub fn status_events(active: Option<&QueueItem>, pending: usize) -> Vec<Event> {
+    let p = StatusParts::new(active, pending);
+    vec![
+        Event::StatusThumb(p.thumb),
+        Event::StatusTitle(p.title),
+        Event::StatusLog(p.log),
+        Event::StatusBar(p.bar),
+        Event::StatusMeta(p.meta),
+        Event::StatusCancel(p.cancel),
+    ]
 }
 
 // ----------------------------- #cards --------------------------------------
@@ -950,25 +1004,54 @@ mod card_tests {
         );
     }
 
-    /// render_status idle banner is hidden; queued banner shows the count;
-    /// active banner shows the bigger bar + thumbnail + queued count.
+    /// `StatusParts` produces the six banner-slot fragments for each state:
+    /// idle (all empty, which hides the banner via CSS), queued (title line
+    /// only), and active (thumb + title + bar + meta + cancel). `status_events`
+    /// wraps them in the six targeted `status-*` events in slot order.
     #[test]
-    fn status_banner_states() {
-        let idle = render_status(None, 0);
-        assert!(idle.contains("banner idle"));
+    fn status_parts_states() {
+        // Idle: every slot empty (the empty `title` hides the banner).
+        let idle = StatusParts::new(None, 0);
+        assert_eq!(idle, StatusParts::default());
+        let idle_evts = status_events(None, 0);
+        assert_eq!(idle_evts.len(), 6);
+        assert_eq!(idle_evts[0].name(), "status-thumb");
+        assert_eq!(idle_evts[1].name(), "status-title");
+        assert_eq!(idle_evts[5].name(), "status-cancel");
+        for ev in &idle_evts {
+            assert!(ev.data().is_empty(), "idle {:?} not empty", ev.name());
+        }
 
-        let queued = render_status(None, 3);
-        assert!(queued.contains("banner queued"));
-        assert!(queued.contains("3 queued"));
+        // Queued: only the title slot is populated ("Waiting… N queued");
+        // the thumb / log / bar / meta / cancel slots stay empty so their
+        // columns / lines collapse.
+        let queued = StatusParts::new(None, 3);
+        assert!(queued.thumb.is_empty());
+        assert!(queued.title.contains("Waiting&hellip;"));
+        assert!(queued.title.contains("3 queued"));
+        assert!(queued.log.is_empty() && queued.bar.is_empty());
+        assert!(queued.meta.is_empty() && queued.cancel.is_empty());
 
+        // Active: every slot is populated; the thumb is the landed image, the
+        // bar is the bigger progress bar, the meta carries percent + ETA, and
+        // the cancel button targets the active item's id.
         let mut it = item(ItemStatus::Active, Some("t.jpg"));
         it.progress = Some(crate::state::Progress::default());
-        let active = render_status(Some(&it), 2);
-        assert!(active.contains("banner active"));
-        assert!(active.contains("bn-bar"), "bigger progress bar present");
-        assert!(active.contains("/thumb/t.jpg"), "thumbnail present");
-        assert!(active.contains("2 queued"));
-        assert!(active.contains("Hello World"), "title present");
+        let active = StatusParts::new(Some(&it), 2);
+        assert!(active.thumb.contains("/thumb/t.jpg"), "thumbnail present");
+        assert!(
+            active.bar.contains("bn-bar") || active.bar.contains("<i"),
+            "bar fill present"
+        );
+        assert!(active.meta.contains("0%"), "percent present");
+        assert!(active.title.contains("Hello World"), "title present");
+        assert!(active.title.contains("2 queued"), "queued badge present");
+        assert!(
+            active.cancel.contains("hx-post=\"/cancel/7\""),
+            "cancel button targets the active item id"
+        );
+        // No log line yet -> log slot empty (collapses).
+        assert!(active.log.is_empty());
     }
 
     /// Each card root carries a stable `id="card-<id>"` plus an

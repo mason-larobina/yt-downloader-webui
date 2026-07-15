@@ -167,10 +167,14 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         state.emit(Event::CardsCount(render::render_cards_count(
             total, pending,
         )));
-        state.emit(Event::Status(render::render_status(
-            active.as_ref(),
-            pending,
-        )));
+        // Structural transition (queued/idle -> active): emit every banner
+        // slot, since the active item, its thumbnail, title, and cancel
+        // button all just changed. This is the only path that touches the
+        // thumbnail slot, so the <img> is never recreated on the progress-tick
+        // hot path below (which swaps only the bar + meta slots).
+        for ev in render::status_events(active.as_ref(), pending) {
+            state.emit(ev);
+        }
     }
 
     // Wire stdout + stderr into a single mpsc of lines.
@@ -189,6 +193,11 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     drop(tx); // rx returns None once all senders drop (both pumps done)
 
     let mut last_status_emit = std::time::Instant::now() - STATUS_THROTTLE;
+    // Separate throttle for the banner's last-log-line subtitle: progress
+    // ticks drive the bar/meta slots, log lines drive the log slot, and
+    // throttling them independently keeps a chatty yt-dlp from suppressing
+    // bar updates (or vice-versa) when one fires right after the other.
+    let mut last_log_emit = std::time::Instant::now() - STATUS_THROTTLE;
 
     loop {
         // Drive output, cancel, and shutdown in a select!.
@@ -235,7 +244,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                         break;
                     }
                     Some(line) => {
-                        handle_line(state, item_id, &line, &mut last_status_emit).await;
+                        handle_line(state, item_id, &line, &mut last_status_emit, &mut last_log_emit).await;
                     }
                 }
             }
@@ -244,7 +253,14 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
 
     // Drain any remaining buffered output before waiting on exit.
     while let Some(line) = rx.recv().await {
-        handle_line(state, item_id, &line, &mut last_status_emit).await;
+        handle_line(
+            state,
+            item_id,
+            &line,
+            &mut last_status_emit,
+            &mut last_log_emit,
+        )
+        .await;
     }
 
     // Wait for the process to exit.
@@ -380,11 +396,18 @@ async fn read_after_move_filename(sidefile: &std::path::Path) -> Option<String> 
 }
 
 /// Handle one parsed output line: update active item + emit events.
+///
+/// `last_status_emit` throttles the progress-bar / progress-text slots
+/// (`status-bar` / `status-meta`); `last_log_emit` independently throttles the
+/// last-log-line slot (`status-log`). Splitting them keeps a chatty yt-dlp
+/// from suppressing bar updates (and lets the log subtitle update even when
+/// no progress tick has fired recently).
 async fn handle_line(
     state: &Arc<AppState>,
     item_id: u64,
     line: &str,
     last_status_emit: &mut std::time::Instant,
+    last_log_emit: &mut std::time::Instant,
 ) {
     match parse_line(line) {
         ParsedLine::Progress(prog) => {
@@ -424,18 +447,21 @@ async fn handle_line(
                 drop(q);
             }
 
-            // Throttled status emit. Always emit on finished/error.
+            // Throttled emit of the banner's progress slots only. Always
+            // emit on finished/error (the terminal tick that lands 100% /
+            // the error state before `emit_final` clears the bar).
             //
-            // Only the *banner* (status event) updates on every throttle tick
-            // -- it carries the live progress bar / percent / ETA. The cards
-            // have no progress bar (progress lives in the banner), so there is
-            // no reason to re-render the whole `#cards` list each tick: doing
-            // so destroys and recreates every card's DOM every 200ms, which
-            // re-triggers the `.card-overlay` opacity fade-in on the active
-            // card and drops `:hover` state on any card the user is
-            // interacting with. Card-visible changes (filename/label, error,
-            // status transitions) are emitted by their own triggers below and
-            // by `emit_final` when the item terminates.
+            // Only the bar + meta slots update on every throttle tick -- they
+            // carry the live progress bar / percent / ETA. The thumbnail,
+            // title, and cancel button are untouched here (they change only on
+            // structural transitions via `emit_final` / the spawn block), so
+            // the `<img>` is not recreated several times a second (the flash
+            // the old whole-`#status` outerHTML swap caused). The cards have no
+            // progress bar either, so there is no reason to re-render the
+            // `#cards` list each tick: doing so destroys and recreates every
+            // card's DOM every 200ms, re-triggering the `.card-overlay`
+            // opacity fade-in on the active card and dropping `:hover` state
+            // on any card the user is interacting with.
             let is_terminal = matches!(status_str.as_deref(), Some("finished") | Some("error"));
             let now = std::time::Instant::now();
             if is_terminal || now.duration_since(*last_status_emit) >= STATUS_THROTTLE {
@@ -452,16 +478,14 @@ async fn handle_line(
             if need_status {
                 let q = state.queue.lock().await;
                 let active = q.get(item_id).cloned();
-                let pending = q
-                    .items
-                    .iter()
-                    .filter(|i| i.status == ItemStatus::Pending)
-                    .count();
                 drop(q);
-                state.emit(Event::Status(render::render_status(
-                    active.as_ref(),
-                    pending,
-                )));
+                // Hot path: only the bar + meta fragments. pending is unused
+                // for these two slots (it only feeds the title's queued
+                // badge), so pass 0 instead of counting Pending items under
+                // the lock on every tick.
+                let p = render::StatusParts::new(active.as_ref(), 0);
+                state.emit(Event::StatusBar(p.bar));
+                state.emit(Event::StatusMeta(p.meta));
             }
         }
         ParsedLine::Log(text) => {
@@ -521,40 +545,43 @@ async fn handle_line(
             }
             state.emit(Event::Log(render::render_log_line(&text)));
 
-            // Live-update the banner's latest-log-line subtitle. yt-dlp can
-            // be chatty, so reuse the same throttle as progress ticks.
+            // Live-update the banner's latest-log-line slot only. yt-dlp can
+            // be chatty, so throttle it (independently from the progress-bar
+            // throttle above) -- and swap only the `status-log` slot, never
+            // the thumbnail (the flash the old whole-`#status` swap caused).
             let now = std::time::Instant::now();
-            if now.duration_since(*last_status_emit) >= STATUS_THROTTLE {
-                *last_status_emit = now;
+            if now.duration_since(*last_log_emit) >= STATUS_THROTTLE {
+                *last_log_emit = now;
                 let q = state.queue.lock().await;
                 let active = q.get(item_id).cloned();
-                let pending = q
-                    .items
-                    .iter()
-                    .filter(|i| i.status == ItemStatus::Pending)
-                    .count();
                 drop(q);
-                state.emit(Event::Status(render::render_status(
-                    active.as_ref(),
-                    pending,
-                )));
+                state.emit(Event::StatusLog(
+                    render::StatusParts::new(active.as_ref(), 0).log,
+                ));
             }
         }
     }
 }
 
-/// Emit the final per-card swap + `cards-count` + `status` for an item
-/// transition (or the idle status when nothing is active). If `active_id` is
-/// given, that item's card is re-rendered at its new (terminal / re-queued)
-/// status; pass None when the item never entered the queue (spawn failure).
+/// Emit the final per-card swap + `cards-count` + the six banner slots for
+/// an item transition (or the idle banner when nothing is active). If
+/// `active_id` is given, that item's card is re-rendered at its new
+/// (terminal / re-queued) status; pass None when the item never entered the
+/// queue (spawn failure).
 ///
-/// Targeted swaps instead of a full-grid `queue` swap: a terminal transition
-/// only changes one card, so re-rendering every card would needlessly
-/// re-trigger the `.card-overlay` opacity fade-in and drop `:hover` state on
-/// any card the user is interacting with. (The full `queue` snapshot is
-/// reserved for SSE connect + lag-recovery -- see `Event::Queue`.)
+/// Structural transition: every banner slot is emitted (the active item, its
+/// thumbnail, title, and cancel button may all have changed, or the banner
+/// may be transitioning to the queued / idle state). This is the counterpart
+/// to the targeted hot path in `handle_line`, which swaps only the bar + meta
+/// (+ log) slots.
+///
+/// Targeted card swap instead of a full-grid `queue` swap: a terminal
+/// transition only changes one card, so re-rendering every card would
+/// needlessly re-trigger the `.card-overlay` opacity fade-in and drop `:hover`
+/// state on any card the user is interacting with. (The full `queue` snapshot
+/// is reserved for SSE connect + lag-recovery -- see `Event::Queue`.)
 async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
-    let (card_html, count_frag, status_frag) = {
+    let (card_html, count_frag, status_evts) = {
         let q = state.queue.lock().await;
         // Only render the progress bar for an item that is *still* Active.
         // Once the item has transitioned to Done/Failed/Cancelled/Pending the
@@ -575,14 +602,16 @@ async fn emit_final(state: &Arc<AppState>, active_id: Option<u64>) {
         (
             card_html,
             render::render_cards_count(total, pending),
-            render::render_status(active.as_ref(), pending),
+            render::status_events(active.as_ref(), pending),
         )
     };
     if let (Some(id), Some(html)) = (active_id, card_html) {
         state.emit(Event::Card { id, html });
     }
     state.emit(Event::CardsCount(count_frag));
-    state.emit(Event::Status(status_frag));
+    for ev in status_evts {
+        state.emit(ev);
+    }
 }
 
 // ---------------------------------------------------------------------------

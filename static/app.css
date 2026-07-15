@@ -368,7 +368,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* ---------- log line rendering (shared by probe stream + item page) ----- */
 .log-empty { color: var(--muted); font-style: italic; }
 
-/* ---------- floating progress banner (spotify-like) ---------- */
+/* ---------- floating progress banner (spotify-like) ----------
+   The banner is a STABLE 3-column shell rendered once in index.html and
+   never swapped on the hot path: left = thumbnail (#status-thumb), middle =
+   4 lines (#status-title / #status-log / #status-bar / #status-meta), right
+   = cancel button (#status-cancel). Each slot is its own sse-swap target, so
+   a progress tick swaps only the bar + meta fragments -- never the <img>
+   thumbnail, which is what flashed when the whole #status outerHTML was
+   swapped several times a second. Visibility is driven purely by content:
+   an empty #status-title hides the whole banner (idle), and any other empty
+   slot collapses (display:none via :empty), so the queued state (only the
+   title is populated) reads as a compact one-liner. */
 .banner {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: 16px; z-index: 50;
@@ -376,19 +386,29 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: var(--bg-2); border: 1px solid var(--line-2);
   border-radius: 14px; box-shadow: var(--shadow-lg);
   overflow: hidden;
+  display: flex; align-items: stretch; padding: 12px; gap: 14px;
 }
-.banner.idle { display: none; }
-.banner.queued { padding: 12px 16px; }
-.banner.active { display: flex; align-items: stretch; padding: 12px; gap: 14px; }
+/* Idle: the title slot is empty -> hide the whole banner. */
+.banner:has(#status-title:empty) { display: none; }
+
+/* Left column (thumbnail) + right column (cancel button): fixed-width,
+   vertically centered, and collapsed when their slot is empty. */
+#status-thumb, #status-cancel { flex: 0 0 auto; display: flex; align-items: center; }
+#status-thumb:empty, #status-cancel:empty { display: none; }
+
+/* Middle column: the 4 lines, stacked with a small gap. Empty lines
+   collapse so the queued state (title only) has no extra spacing. */
+.bn-middle { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+#status-log:empty, #status-bar:empty, #status-meta:empty { display: none; }
 
 .bn-img {
-  flex: 0 0 auto; width: 96px; height: 54px; object-fit: cover; display: block;
+  width: 96px; height: 54px; object-fit: cover; display: block;
   border-radius: 8px; background: var(--bar-bg);
 }
 .bn-img-placeholder { background:
   repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 10px, var(--bg-3) 10px, var(--bg-3) 20px); }
 
-.bn-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+/* Line 1: title + (optional) "N queued" badge. */
 .bn-top { display: flex; align-items: center; gap: 10px; }
 .bn-title { font-weight: 800; font-size: 14px; letter-spacing: -0.01em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 0; }
@@ -396,21 +416,34 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex: 0 0 auto; font-size: 11px; font-weight: 700; color: var(--brand-solid);
   background: rgba(167,139,250,0.14); padding: 3px 10px; border-radius: 10px;
 }
-.bn-queued { color: var(--brand-solid); }
-}
+
+/* Line 2: most recent yt-dlp log line. */
 .bn-log {
   font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Bigger progress bar than the old per-card one. Brand gradient fill. */
+/* Line 3: progress bar (bigger than the old per-card one; brand gradient fill). */
 .bn-bar { height: 12px; background: var(--bar-bg); border-radius: 6px; overflow: hidden; }
 .bn-bar i { display: block; height: 100%; background: var(--brand); transition: width 0.2s; border-radius: 6px; }
 
+/* Line 4: duration/ETA  ·  percent  ·  speed/bytes. */
 .bn-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--muted); font-family: monospace; font-weight: 600; }
 .bn-meta .bn-left { flex: 1 1 auto; min-width: 0; }
 .bn-meta .bn-pct { color: var(--fg); font-weight: 800; }
 .bn-meta .bn-right { flex: 0 0 auto; }
+
+/* Right column: cancel button (stops the active download). Ghost pill that
+   turns rose on hover; the hx-post is re-bound by htmx on every swap. */
+.bn-cancel {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 9px;
+  background: var(--bg-3); border: 1px solid var(--line-2);
+  color: var(--fg); font-size: 12px; font-weight: 700; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.bn-cancel:hover { background: rgba(253,164,175,0.14); border-color: var(--failed); color: var(--failed); }
+.bn-cancel-icon { width: 16px; height: 16px; display: block; pointer-events: none; }
 
 @media (max-width: 760px) {
   .banner { width: calc(100vw - 16px); bottom: 8px; }

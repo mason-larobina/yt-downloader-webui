@@ -118,7 +118,7 @@ echo "=== /probe event counts ==="
 grep -o '^event: [a-z]*' "$WORK/probe.raw" | sort | uniq -c
 echo
 echo "=== /events event counts ==="
-grep -o '^event: [a-z]*' "$WORK/sse.raw" | sort | uniq -c
+grep -o '^event: [a-z-]*' "$WORK/sse.raw" | sort | uniq -c
 echo
 echo "=== final card event (expect 'card done') ==="
 # The terminal transition emits a targeted `card-<id>` event (not a full-grid
@@ -130,8 +130,8 @@ echo
 echo "=== last cards-count event (expect '1 total, 0 pending') ==="
 awk '/^event: cards-count$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
 echo
-echo "=== last status event (expect idle 'queue empty', NOT a 0% bar) ==="
-awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
+echo "=== last status-title event (expect empty = idle) ==="
+awk '/^event: status-title$/{getline d; last=d} END{print last}' "$WORK/sse.raw"
 echo
 echo "=== files in download dir ==="
 ls -la "$DL"
@@ -162,8 +162,16 @@ fi
 if ! grep -q '^event: card-' "$WORK/sse.raw"; then
   echo "FAIL: no targeted card-<id> event in /events stream"; fail=1
 fi
-if ! awk '/^event: status$/{getline d; last=d} END{print last}' "$WORK/sse.raw" | grep -q 'banner idle'; then
-  echo "FAIL: final status is not idle"; fail=1
+# The banner is driven by targeted `status-*` slots (not a blanket `status`
+# swap), so a progress tick must emit at least one `status-bar` event.
+if ! grep -q '^event: status-bar$' "$WORK/sse.raw"; then
+  echo "FAIL: no targeted status-bar event in /events stream"; fail=1
+fi
+# Final state is idle: the last `status-title` slot is empty (no `bn-title`
+# span), which is what hides the banner via CSS -- not a stale 0% bar.
+if awk '/^event: status-title$/{getline d; last=d} END{print last}' "$WORK/sse.raw" \
+  | grep -q 'bn-title'; then
+  echo "FAIL: final status-title is not idle (still showing a title)"; fail=1
 fi
 if [[ -z "$(find "$DL" -type f ! -name '.*' -print -quit)" ]]; then
   echo "FAIL: no file downloaded"; fail=1

@@ -316,16 +316,34 @@ fn spawn_thumbnail_fetches(state: Arc<AppState>, items: Vec<(u64, String)>) {
                 state.emit(Event::Card { id: *id, html });
             }
         }
+        // If one of the landed thumbnails belongs to the currently-active
+        // item, refresh just the banner's thumbnail slot (a targeted
+        // `status-thumb` swap) -- not a full `#status` swap, which would
+        // recreate the progress bar / title / cancel button and flash the
+        // thumbnail mid-download. (A thumbnail commonly lands *after* the
+        // item has gone active, since the fetch is spawned at enqueue and
+        // the worker picks the item up almost immediately.)
+        if let Some(active) = q.items.iter().find(|i| i.status == ItemStatus::Active) {
+            if changed.contains(&active.id) {
+                state.emit(Event::StatusThumb(
+                    render::StatusParts::new(Some(active), 0).thumb,
+                ));
+            }
+        }
         drop(q);
         state.persist().await;
     });
 }
 
-/// Emit a `cards-count` + `status` swap together. Used by request handlers
-/// after mutating the queue so the floating banner (status: pending count /
-/// active download) stays live alongside the header count. Per-card changes
-/// (add / update / remove) are emitted by each caller separately -- this
-/// helper only refreshes the two summary targets.
+/// Emit a `cards-count` + `status-title` swap together. Used by request
+/// handlers after mutating the queue so the floating banner's "N queued"
+/// badge (and the header count) stay live alongside per-card changes. Only
+/// the title slot is refreshed -- not the thumbnail / bar / meta / cancel
+/// slots -- because these handlers never change the *active* item (they
+/// enqueue / cancel-pending / retry-terminal / delete-terminal), so touching
+/// the active-item slots would needlessly recreate the `<img>` thumbnail and
+/// flash it mid-download. Active-item transitions are emitted by the worker's
+/// `emit_final` + spawn block (which emit every slot).
 async fn emit_count_status(state: &Arc<AppState>) {
     let q = state.queue.lock().await;
     let active = q.items.iter().find(|i| i.status == ItemStatus::Active);
@@ -338,7 +356,9 @@ async fn emit_count_status(state: &Arc<AppState>) {
     state.emit(Event::CardsCount(render::render_cards_count(
         total, pending,
     )));
-    state.emit(Event::Status(render::render_status(active, pending)));
+    state.emit(Event::StatusTitle(
+        render::StatusParts::new(active, pending).title,
+    ));
 }
 
 /// POST /cancel/:id -- cancel the active or pending queue item.
@@ -579,7 +599,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
     let shutdown = state.shutdown.clone();
 
     // Build the snapshot under the locks, *before* the stream starts.
-    let (queue_frag, status_frag, library_frag, log_lines) = {
+    let (queue_frag, status_evts, library_frag, log_lines) = {
         let q = state.queue.lock().await;
         let active = q
             .items
@@ -592,7 +612,9 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
             .filter(|i| i.status == ItemStatus::Pending)
             .count();
         let queue_frag = render::render_queue(&q);
-        let status_frag = render::render_status(active.as_ref(), pending);
+        // The six banner slots, as ready-to-emit events (each targets one
+        // stable slot in the `#status` shell -- see index.html).
+        let status_evts = render::status_events(active.as_ref(), pending);
         drop(q);
 
         let library_frag = render::render_library_scan(&state.cfg.download_dir);
@@ -601,7 +623,7 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
             let ring = state.log_ring.lock().await;
             render::snapshot_log_lines(&ring.snapshot())
         };
-        (queue_frag, status_frag, library_frag, log_lines)
+        (queue_frag, status_evts, library_frag, log_lines)
     };
 
     let s = stream! {
@@ -609,7 +631,9 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
         yield Ok::<SseEvent, std::convert::Infallible>(
             SseEvent::default().event("queue").data(queue_frag)
         );
-        yield Ok(SseEvent::default().event("status").data(status_frag));
+        for ev in &status_evts {
+            yield Ok(SseEvent::default().event(ev.name()).data(ev.data()));
+        }
         yield Ok(SseEvent::default().event("library").data(library_frag));
         for line in log_lines {
             yield Ok(SseEvent::default().event("log").data(line));
@@ -628,11 +652,29 @@ async fn get_events(State(state): State<Arc<AppState>>) -> Response {
                                 .data(event.data()));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            // Re-snapshot to self-heal.
+                            // Re-snapshot to self-heal: the full cards grid,
+                            // the six banner slots, and the replayed log
+                            // lines. (The banner slots were missing from the
+                            // old lag-recovery, leaving the banner stale after
+                            // a lag.)
                             tracing::debug!("SSE lagged by {n}; re-snapshotting");
                             let q = state.queue.lock().await;
                             yield Ok(SseEvent::default()
                                 .event("queue").data(render::render_queue(&q)));
+                            let active = q
+                                .items
+                                .iter()
+                                .find(|i| i.status == ItemStatus::Active);
+                            let pending = q
+                                .items
+                                .iter()
+                                .filter(|i| i.status == ItemStatus::Pending)
+                                .count();
+                            for ev in render::status_events(active, pending) {
+                                yield Ok(SseEvent::default()
+                                    .event(ev.name()).data(ev.data()));
+                            }
+                            drop(q);
                             let ring = state.log_ring.lock().await;
                             for line in render::snapshot_log_lines(&ring.snapshot()) {
                                 yield Ok(SseEvent::default().event("log").data(line));
