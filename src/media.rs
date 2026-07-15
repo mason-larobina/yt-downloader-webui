@@ -40,9 +40,15 @@ pub struct MediaInfo {
     /// Frame rate of the primary video stream (e.g. 29.97). `None` if unknown.
     #[serde(default)]
     pub fps: Option<f64>,
-    /// Container/format name (e.g. `mov,mp4,m4a,3gp,3g2,mj2`).
+    /// Human-readable container format from ffprobe's `format_long_name`
+    /// (e.g. `QuickTime / MOV`, `Matroska / WebM`). Unlike `format_name`
+    /// (a comma-separated list of every demuxer that can read the container)
+    /// this is the single descriptive name of the actual format.
     #[serde(default)]
-    pub format: Option<String>,
+    pub format_long_name: Option<String>,
+    /// File size in bytes (from `format.size`).
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 impl MediaInfo {
@@ -68,6 +74,24 @@ impl MediaInfo {
         } else {
             let kbps = bps / 1000;
             Some(format!("{kbps} kb/s"))
+        }
+    }
+
+    /// Human-friendly file size, e.g. `13.7 MB`. `None` if unknown. Uses
+    /// binary units (1024-based), matching what a file manager reports.
+    pub fn size_str(&self) -> Option<String> {
+        let bytes = self.size? as f64;
+        const KB: f64 = 1024.0;
+        const MB: f64 = KB * 1024.0;
+        const GB: f64 = MB * 1024.0;
+        if bytes >= GB {
+            Some(format!("{:.2} GB", bytes / GB))
+        } else if bytes >= MB {
+            Some(format!("{:.1} MB", bytes / MB))
+        } else if bytes >= KB {
+            Some(format!("{:.1} KB", bytes / KB))
+        } else {
+            Some(format!("{:.0} B", bytes))
         }
     }
 }
@@ -107,7 +131,10 @@ struct FfprobeFormat {
     #[serde(default)]
     bit_rate: Option<String>,
     #[serde(default)]
-    format_name: Option<String>,
+    format_long_name: Option<String>,
+    /// File size in bytes, as a string (e.g. `"2448"`).
+    #[serde(default)]
+    size: Option<String>,
 }
 
 /// Run `ffprobe` on `path` and return parsed [`MediaInfo`]. Returns an error
@@ -174,7 +201,12 @@ fn parse(out: FfprobeOutput) -> MediaInfo {
         fps: video.and_then(|v| {
             parse_fraction(&v.avg_frame_rate).or_else(|| parse_fraction(&v.r_frame_rate))
         }),
-        format: out.format.format_name,
+        format_long_name: out.format.format_long_name,
+        size: out
+            .format
+            .size
+            .as_deref()
+            .and_then(|s| s.parse::<u64>().ok()),
     }
 }
 
@@ -236,7 +268,8 @@ mod tests {
             format: FfprobeFormat {
                 duration: Some("600.500".into()),
                 bit_rate: Some("2800000".into()),
-                format_name: Some("mov,mp4,m4a,3gp,3g2,mj2".into()),
+                format_long_name: Some("QuickTime / MOV".into()),
+                size: Some("12345678".into()),
             },
         };
         let m = parse(out);
@@ -250,6 +283,9 @@ mod tests {
         assert!((m.fps.unwrap() - 29.97).abs() < 1e-2);
         assert_eq!(m.bit_rate, Some(2_800_000));
         assert_eq!(m.bitrate_str().as_deref(), Some("2.80 Mb/s"));
+        assert_eq!(m.format_long_name.as_deref(), Some("QuickTime / MOV"));
+        assert_eq!(m.size, Some(12_345_678));
+        assert_eq!(m.size_str().as_deref(), Some("11.8 MB"));
     }
 
     #[test]
@@ -289,6 +325,20 @@ mod tests {
         assert!(m.bitrate_str().is_none());
     }
 
+    #[test]
+    fn size_str_formats_across_units() {
+        let mut m = MediaInfo::default();
+        assert!(m.size_str().is_none());
+        m.size = Some(512);
+        assert_eq!(m.size_str().as_deref(), Some("512 B"));
+        m.size = Some(2_048);
+        assert_eq!(m.size_str().as_deref(), Some("2.0 KB"));
+        m.size = Some(12_345_678);
+        assert_eq!(m.size_str().as_deref(), Some("11.8 MB"));
+        m.size = Some(5 * 1024 * 1024 * 1024);
+        assert_eq!(m.size_str().as_deref(), Some("5.00 GB"));
+    }
+
     /// End-to-end probe against a synthetic 2s clip. Ignored by default (needs
     /// ffprobe on PATH); run with `cargo test -- --ignored`.
     #[tokio::test]
@@ -316,6 +366,9 @@ mod tests {
         assert_eq!(m.height, Some(360));
         assert!((m.duration.unwrap() - 2.0).abs() < 0.1);
         assert!((m.fps.unwrap() - 30.0).abs() < 0.1);
+        assert_eq!(m.format_long_name.as_deref(), Some("QuickTime / MOV"));
+        assert!(m.size.unwrap_or(0) > 0);
+        assert!(m.size_str().is_some());
 
         std::fs::remove_dir_all(&dir).ok();
     }

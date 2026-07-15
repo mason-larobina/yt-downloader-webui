@@ -44,6 +44,7 @@
               {% if let Some(a) = media_audio %}<dt>audio</dt><dd>{{ a }}</dd>{% endif %}
               {% if let Some(b) = media_bitrate %}<dt>bitrate</dt><dd>{{ b }}</dd>{% endif %}
               {% if let Some(f) = media_format %}<dt>format</dt><dd>{{ f }}</dd>{% endif %}
+              {% if let Some(s) = media_size %}<dt>size</dt><dd>{{ s }}</dd>{% endif %}
               {% if let Some(name) = filename %}<dt>file</dt><dd>{{ name }}</dd>{% endif %}
               <dt>enqueued</dt><dd>{{ enqueued }}</dd>
             </dl>

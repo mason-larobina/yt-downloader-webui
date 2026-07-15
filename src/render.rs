@@ -381,6 +381,7 @@ struct ItemPage<'a> {
     media_audio: Option<String>,
     media_bitrate: Option<String>,
     media_format: Option<String>,
+    media_size: Option<String>,
     /// Poll the log body only while the download may still emit output.
     polling: bool,
     lines: Vec<String>,
@@ -420,7 +421,8 @@ pub fn render_item_page(item: &QueueItem) -> String {
         media_video: item.media.as_ref().and_then(media_video_str),
         media_audio: item.media.as_ref().and_then(|m| m.audio_codec.clone()),
         media_bitrate: item.media.as_ref().and_then(|m| m.bitrate_str()),
-        media_format: item.media.as_ref().and_then(|m| m.format.clone()),
+        media_format: item.media.as_ref().and_then(|m| m.format_long_name.clone()),
+        media_size: item.media.as_ref().and_then(|m| m.size_str()),
         polling: matches!(item.status, ItemStatus::Pending | ItemStatus::Active),
         lines,
     }
