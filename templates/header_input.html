@@ -1,5 +1,5 @@
 <form class="submit" hx-post="/download" hx-target="#header-input" hx-swap="innerHTML" hx-disabled-elt="#dl-btn">
-  <input type="text" name="url" placeholder="Paste a URL..." autocomplete="off" autofocus>
+  <input type="text" name="url" placeholder="Paste link here..." autocomplete="off" autofocus>
   <button type="submit" id="dl-btn">Add</button>
 </form>
 {% if let Some(m) = error %}
