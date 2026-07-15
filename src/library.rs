@@ -63,10 +63,14 @@ pub fn resolve_safe(dir: &Path, name: &str) -> Option<PathBuf> {
         return None;
     }
     let target = dir.join(name);
-    // Canonicalize the parent and rejoin, then verify the resolved path stays
-    // under the dir. We avoid requiring the file to exist via canonicalize on
-    // the target (it does for /file and /delete which operate on existing
-    // files); if it doesn't exist, return None.
+    // Canonicalize both `dir` and the target, then require the resolved
+    // target to stay under `dir`. The earlier string checks block the obvious
+    // traversal names; canonicalization resolves symlinks, so a `dir` entry
+    // that is a symlink pointing outside is rejected by the `starts_with`
+    // check. `canonicalize` requires the path to exist (returns `None` for a
+    // missing file), which is fine here -- /file and /delete only ever
+    // operate on existing files, and a miss maps to a 404, never an error
+    // that leaks whether an out-of-dir path existed.
     let dir_canon = dir.canonicalize().ok()?;
     let target_canon = target.canonicalize().ok()?;
     if target_canon.starts_with(&dir_canon) {

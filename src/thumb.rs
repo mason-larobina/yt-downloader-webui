@@ -32,9 +32,13 @@ pub fn resolve(cache_dir: &Path, name: &str) -> Option<PathBuf> {
         return None;
     }
     let target = cache_dir.join(name);
-    // Canonicalize the parent so we don't require the file to exist (it may
-    // not yet -- but for /thumb serving it does); if it exists, canonicalize
-    // the target and assert it stays under the cache dir.
+    // Canonicalize both `cache_dir` and the target, then require the resolved
+    // target to stay under the cache dir (mirrors `library::resolve_safe`:
+    // the string checks block obvious traversal names, canonicalization
+    // resolves symlinks so a symlinked cache entry pointing outside is
+    // rejected). `canonicalize` requires the file to exist (returns `None`
+    // for a missing file), which is fine -- /thumb only ever serves an
+    // existing cached thumbnail, so a miss maps to a 404.
     let dir_canon = cache_dir.canonicalize().ok()?;
     let target_canon = target.canonicalize().ok()?;
     if target_canon.starts_with(&dir_canon) {

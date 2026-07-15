@@ -210,7 +210,10 @@ fn parse(out: FfprobeOutput) -> MediaInfo {
     }
 }
 
-/// Parse a float that may be `"12.345"` or already numeric-ish.
+/// Parse a decimal string ffprobe emits for duration/bitrate (e.g.
+/// `"600.500"`), returning `None` for non-numeric or non-positive values:
+/// ffprobe uses `0` or `N/A` for "unknown", and a non-positive duration is
+/// meaningless, so those are dropped rather than stored.
 fn parse_f64(s: &str) -> Option<f64> {
     s.trim()
         .parse::<f64>()

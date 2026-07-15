@@ -364,11 +364,13 @@ async fn pump_lines<R: AsyncRead + Unpin + Send + 'static>(pipe: R, tx: mpsc::Se
     }
 }
 
-/// Drain any remaining buffered lines (after cancel) into the log.
+/// Discard any output lines still buffered in the channel after a cancel so
+/// the child's line pumps drain and exit cleanly. The lines are intentionally
+/// dropped, not logged: they were produced after the user already asked to
+/// stop, so surfacing them would only clutter the log with trailing output
+/// from a download that was aborted on purpose.
 async fn drain(rx: &mut mpsc::Receiver<String>) {
-    while let Ok(line) = rx.try_recv() {
-        let _ = line; // discarded for brevity; could log
-    }
+    while rx.try_recv().is_ok() {}
 }
 
 /// Read yt-dlp's `--print-to-file after_move:…` sidecar and return the final
@@ -432,7 +434,11 @@ async fn handle_line(
                         }
                     }
                     if status_str.as_deref() == Some("error") {
-                        // capture error from progress if any
+                        // yt-dlp's progress `status:"error"` JSON carries no
+                        // human message (the text arrives separately on stderr
+                        // as `ERROR:`); record a generic placeholder so the row
+                        // surfaces *something* even if no `ERROR:` line
+                        // follows this tick.
                         if item.error.is_none() {
                             item.error = Some("yt-dlp reported error".to_string());
                         }
@@ -526,7 +532,8 @@ async fn handle_line(
                 }
             }
 
-            // Push into ring buffer and emit a log line.
+            // Push into the global log ring replayed to newly-connected tabs
+            // (not the per-item log -- that is the next block).
             {
                 let mut ring = state.log_ring.lock().await;
                 ring.push(text.clone());
