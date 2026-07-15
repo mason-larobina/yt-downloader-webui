@@ -84,6 +84,14 @@ pub enum Event {
     /// the active download, or empty (collapses the column). Emitted only on
     /// structural transitions (active item change).
     StatusCancel(String),
+    /// A transient, informational toast swapped into the `#ack` element (the
+    /// same ack toast POST actions use) via the `toast` SSE event. Used to
+    /// surface background events the user would otherwise miss -- e.g. a
+    /// download that was de-duplicated against an existing item. The `#ack`
+    /// element is its own `sse-swap="toast"` target and already auto-clears
+    /// after a few seconds (see `index.html`), so this needs no client-side
+    /// handling beyond the shared ack-toast machinery.
+    Toast(String),
 }
 
 impl Event {
@@ -103,6 +111,7 @@ impl Event {
             Event::StatusBar(_) => "status-bar".into(),
             Event::StatusMeta(_) => "status-meta".into(),
             Event::StatusCancel(_) => "status-cancel".into(),
+            Event::Toast(_) => "toast".into(),
         }
     }
 
@@ -119,6 +128,7 @@ impl Event {
             | Event::StatusBar(s)
             | Event::StatusMeta(s)
             | Event::StatusCancel(s) => s,
+            Event::Toast(s) => s,
             Event::Card { html, .. } => html,
         }
     }

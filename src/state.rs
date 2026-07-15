@@ -79,6 +79,22 @@ pub struct Queue {
     pub next_id: u64,
 }
 
+/// Outcome of [`Queue::enqueue`]. Either a fresh Pending item was created
+/// (the worker will download it), or the URL was already downloaded so the
+/// existing Done item was **re-surfaced** -- its `enqueued_at` is touched to
+/// now so it reorders to the top of the (newest-first) cards grid (the
+/// just-submitted video is the one the user expects to see), and no new row
+/// or file is created. The caller emits a toast + moves the card so the
+/// de-duplication is visible instead of silently swallowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueResult {
+    /// A fresh Pending item was created (id); the worker will download it.
+    Added(u64),
+    /// The URL was already downloaded: the existing Done item (id) was
+    /// re-surfaced (`enqueued_at` touched to now). No download occurs.
+    Subsumed(u64),
+}
+
 impl Queue {
     pub fn new() -> Self {
         Queue {
@@ -98,10 +114,20 @@ impl Queue {
     /// downloads it directly (no probe). `title`/`duration` are borrowed from
     /// the synchronous probe in `POST /download` (a playlist entry's `url` is
     /// already the full watch URL; a single video keeps the original URL).
-    /// Returns the new item's id, or `None` if the URL was skipped because a
-    /// previously-downloaded item with the **exact same URL** already exists
-    /// in the queue -- re-downloading a playlist should not create duplicate
-    /// rows / files for videos already on disk.
+    ///
+    /// De-duplicates against successful downloads: if a Done item with the
+    /// **exact same URL** already exists, the video is already on disk. Rather
+    /// than silently skipping (which left the user with no feedback that their
+    /// submit did anything), the existing item is **re-surfaced** -- its
+    /// `enqueued_at` is touched to now so it reorders to the top of the cards
+    /// grid -- and [`EnqueueResult::Subsumed`] is returned so the caller can
+    /// emit a toast + move the card. No new row / file is created, so
+    /// re-downloading a playlist still doesn't duplicate anything. A
+    /// different URL for the same on-disk file is NOT caught here (it creates
+    /// a second item); that collision is reconciled per-filename by
+    /// `import::dedupe_done_per_filename` after the download lands. Failed /
+    /// Cancelled items are intentionally NOT matched: they produced no file and
+    /// should be retried (they enqueue as a fresh Pending item).
     ///
     /// Playlists are never persisted: their expansion happens in the request
     /// handler and is presented for approval; only the approved per-video
@@ -111,26 +137,33 @@ impl Queue {
         url: String,
         title: Option<String>,
         duration: Option<f64>,
-    ) -> Option<u64> {
+    ) -> EnqueueResult {
         // Dedupe against successful downloads: if a Done item with the exact
-        // same URL already exists, the video is already on disk -- skip it so
-        // re-downloading a playlist doesn't create duplicate rows / files.
-        // Failed/Cancelled items are intentionally NOT matched: those did not
-        // produce a file and should be retried.
-        if self
+        // same URL already exists, re-surface it instead of silently skipping,
+        // so the user sees the just-submitted video surface at the top + a
+        // toast. No new row / file is created. Re-surfacing = move the item to
+        // the **end** of the Vec (the cards grid renders `items.iter().rev()`,
+        // so the last item is at the top) and touch `enqueued_at` to now (for
+        // the item-page timestamp + the per-filename dedupe's newest-by-
+        // enqueued_at tiebreak). Both agree it is the most recent item.
+        if let Some(idx) = self
             .items
             .iter()
-            .any(|i| i.url == url && i.status == ItemStatus::Done)
+            .position(|i| i.url == url && i.status == ItemStatus::Done)
         {
-            tracing::info!("skipping already-downloaded URL: {url}");
-            return None;
+            let mut item = self.items.remove(idx);
+            item.enqueued_at = time::OffsetDateTime::now_utc();
+            let id = item.id;
+            self.items.push(item);
+            tracing::info!("re-surfacing already-downloaded URL: {url}");
+            return EnqueueResult::Subsumed(id);
         }
         let id = self.alloc_id();
         let mut item = QueueItem::new(id, url);
         item.title = title;
         item.duration = duration;
         self.items.push(item);
-        Some(id)
+        EnqueueResult::Added(id)
     }
 
     /// Find an item by id.
@@ -353,29 +386,51 @@ mod tests {
         item.status = ItemStatus::Done;
     }
 
-    /// Enqueueing a fresh URL returns a new id and appends a Pending item.
+    /// Enqueueing a fresh URL returns `Added` with a new id and appends a
+    /// Pending item.
     #[test]
     fn enqueue_fresh_url() {
         let mut q = Queue::new();
         let id = q.enqueue("https://example/v/1".to_string(), None, None);
-        assert_eq!(id, Some(1));
+        assert_eq!(id, EnqueueResult::Added(1));
         assert_eq!(q.items.len(), 1);
         assert_eq!(q.items[0].status, ItemStatus::Pending);
     }
 
-    /// Re-enqueueing a URL whose previous item is Done returns None and does
-    /// not append a row. This is the playlist-redownload dedupe regression:
-    /// the same video must not be queued twice once it is already on disk.
+    /// Re-enqueueing a URL whose previous item is Done does NOT append a new
+    /// row: instead the existing item is re-surfaced (`Subsumed`) -- moved to
+    /// the end of the Vec (so the cards grid, which renders
+    /// `items.iter().rev()`, shows it at the top) with `enqueued_at` touched
+    /// to now. This is the playlist-redownload dedupe regression: the same
+    /// video must not be queued twice once it is already on disk, but the
+    /// submit must still be *visible* (a toast + the card surfacing at the
+    /// top), not silently swallowed.
     #[test]
-    fn enqueue_skips_already_done() {
+    fn enqueue_resurfaces_already_done() {
         let mut q = Queue::new();
-        let id = q.enqueue("https://example/v/1".to_string(), None, None);
-        assert_eq!(id, Some(1));
+        // Three items: v/1 (done), v/2 (done), v/3 (done). v/1 is oldest.
+        let _ = q.enqueue("https://example/v/1".to_string(), None, None);
         mark_done(q.get_mut(1).unwrap());
-        // Re-submit the exact same URL.
+        let _ = q.enqueue("https://example/v/2".to_string(), None, None);
+        mark_done(q.get_mut(2).unwrap());
+        let _ = q.enqueue("https://example/v/3".to_string(), None, None);
+        mark_done(q.get_mut(3).unwrap());
+        let before = q.get(1).unwrap().enqueued_at;
+        assert_eq!(
+            q.items.last().map(|i| i.id),
+            Some(3),
+            "v/3 newest beforehand"
+        );
+
+        // Re-submit the oldest URL (v/1): it is re-surfaced to the top, not
+        // duplicated, not left buried mid-stack.
         let again = q.enqueue("https://example/v/1".to_string(), None, None);
-        assert_eq!(again, None);
-        assert_eq!(q.items.len(), 1, "no duplicate row created");
+        assert_eq!(again, EnqueueResult::Subsumed(1), "no new row created");
+        assert_eq!(q.items.len(), 3, "no duplicate row created");
+        // v/1 is now last in the Vec -> first under `iter().rev()` -> top card.
+        assert_eq!(q.items.last().map(|i| i.id), Some(1), "re-surfaced to top");
+        // enqueued_at was touched to now.
+        assert!(q.get(1).unwrap().enqueued_at >= before);
     }
 
     /// A Failed (or Cancelled) previous attempt is NOT a successful download,
@@ -386,7 +441,7 @@ mod tests {
         let _ = q.enqueue("https://example/v/1".to_string(), None, None);
         q.get_mut(1).unwrap().status = ItemStatus::Failed;
         let again = q.enqueue("https://example/v/1".to_string(), None, None);
-        assert_eq!(again, Some(2));
+        assert_eq!(again, EnqueueResult::Added(2));
         assert_eq!(q.items.len(), 2);
     }
 
@@ -398,19 +453,19 @@ mod tests {
         let _ = q.enqueue("https://example/v/1".to_string(), None, None);
         mark_done(q.get_mut(1).unwrap());
         let other = q.enqueue("https://example/v/2".to_string(), None, None);
-        assert_eq!(other, Some(2));
+        assert_eq!(other, EnqueueResult::Added(2));
         assert_eq!(q.items.len(), 2);
     }
 
     /// A pending (in-flight) duplicate is not treated as a success: the user
-    /// may legitimately re-submit a playlist; only Done gates the skip.
+    /// may legitimately re-submit a playlist; only Done gates the re-surface.
     #[test]
     fn enqueue_pending_is_not_skipped() {
         let mut q = Queue::new();
         let _ = q.enqueue("https://example/v/1".to_string(), None, None);
         // Still Pending.
         let again = q.enqueue("https://example/v/1".to_string(), None, None);
-        assert_eq!(again, Some(2));
+        assert_eq!(again, EnqueueResult::Added(2));
         assert_eq!(q.items.len(), 2);
     }
 }

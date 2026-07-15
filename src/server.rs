@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::events::Event;
 use crate::library;
 use crate::render;
-use crate::state::{AppState, ItemStatus};
+use crate::state::{AppState, EnqueueResult, ItemStatus};
 use crate::worker;
 
 use sha1::{Digest, Sha1};
@@ -305,32 +305,52 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
     // is fetched, a native ffmpeg-extracted frame (generated after the download)
     // acts as the fallback primary.
     let mut thumbs: Vec<(u64, String)> = Vec::new();
-    let mut added: Vec<u64> = Vec::new();
+    // Ids of already-downloaded URLs that were re-surfaced (de-duplicated):
+    // the existing Done item was moved to the top of the grid + its
+    // `enqueued_at` touched to now, but no new row / file was created. Used
+    // to emit one summary toast so the de-dup isn't silently swallowed.
+    let mut subsumed: Vec<u64> = Vec::new();
     {
         let mut q = state.queue.lock().await;
         for raw in &entries {
             match serde_json::from_str::<render::ApprovalEntry>(raw) {
-                Ok(e) => {
-                    if let Some(id) = q.enqueue(e.url, e.title, e.duration) {
-                        added.push(id);
+                Ok(e) => match q.enqueue(e.url, e.title, e.duration) {
+                    EnqueueResult::Added(id) => {
                         if let Some(t) = e.thumbnail {
                             thumbs.push((id, t));
                         }
+                        // Prepend the new card at the top. Emitted inline (in
+                        // entry order, not batched) so the live DOM order
+                        // matches the `items` Vec order (rendered
+                        // `iter().rev()` on refresh) even for a mixed batch of
+                        // new + already-downloaded entries.
+                        if let Some(item) = q.get(id) {
+                            state.emit(Event::CardAdded(render::render_card(item)));
+                        }
                     }
-                }
+                    EnqueueResult::Subsumed(id) => {
+                        subsumed.push(id);
+                        // Move the re-surfaced card to the top: remove it
+                        // from its old slot (an empty `card-<id>` payload
+                        // deletes the node) then prepend it fresh (a
+                        // `card-added` event). Targeted, so unrelated cards
+                        // keep their DOM / hover state -- no full-grid swap
+                        // (which would re-trigger every card's overlay
+                        // fade-in). Emitted inline in entry order so the
+                        // live order matches the Vec on refresh.
+                        state.emit(Event::Card {
+                            id,
+                            html: String::new(),
+                        });
+                        if let Some(item) = q.get(id) {
+                            state.emit(Event::CardAdded(render::render_card(item)));
+                        }
+                    }
+                },
                 Err(_) => {
                     // Skip a malformed value rather than failing the whole
                     // batch; the user can re-probe.
                 }
-            }
-        }
-        // One targeted `card-added` prepend per newly-enqueued card -- not a
-        // full-grid `queue` swap -- so existing cards' DOM (and any `:hover`
-        // state) survive a batch enqueue. Each prepended card carries its own
-        // `sse-swap="card-<id>"` listener, re-bound by htmx on insert.
-        for id in &added {
-            if let Some(item) = q.get(*id) {
-                state.emit(Event::CardAdded(render::render_card(item)));
             }
         }
     }
@@ -340,6 +360,21 @@ async fn post_confirm(State(state): State<Arc<AppState>>, body: Bytes) -> String
 
     if !thumbs.is_empty() {
         spawn_thumbnail_fetches(state.clone(), thumbs);
+    }
+
+    // Surface the de-duplication so it isn't silently buried: one toast for
+    // the whole batch (the shared `#ack` slot overwrites, so per-item toasts
+    // would just clobber each other).
+    if !subsumed.is_empty() {
+        let msg = if subsumed.len() == 1 {
+            "Already downloaded \u{2014} de-duplicated; moved to the top.".to_string()
+        } else {
+            format!(
+                "De-duplicated {} already-downloaded video(s); moved the latest to the top.",
+                subsumed.len()
+            )
+        };
+        state.emit(Event::Toast(render::render_ack(&msg, false)));
     }
 
     render::render_header_input(None)

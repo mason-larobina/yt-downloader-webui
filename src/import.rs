@@ -3,10 +3,14 @@
 //! successful download.
 //!
 //! 1. **Dedupe** -- at most one Done state file per on-disk video filename.
-//!    When several Done items reference the same file (e.g. an imported item
-//!    plus a later real download of the same file, or stale duplicates), the
-//!    "best" one is kept and the rest are dropped (their state files are
-//!    deleted by the next `persist::save` reconciliation).
+//!    When several Done items reference the same file (e.g. a re-download of
+//!    a video already on disk, or stale duplicate state files), the **newest**
+//!    item (most recently enqueued) is kept -- it retains its own id and queue
+//!    position so the card the user was watching stays put -- and the older
+//!    items' state (url / title / duration / media / thumbnails) is subsumed
+//!    (merged) into it before they are dropped (their state files are deleted
+//!    by the next `persist::save` reconciliation). A `toast` SSE event informs
+//!    the user that the de-duplication happened, so it isn't silently buried.
 //! 2. **Prune missing** -- a Done item whose on-disk video has been moved or
 //!    deleted is removed from the queue (its state file is deleted by
 //!    `persist::save`). A moved file is then re-imported in step 3 under its
@@ -91,8 +95,15 @@ pub async fn reconcile(state: Arc<AppState>) {
 }
 
 /// Step 1: for each on-disk filename referenced by more than one Done item,
-/// keep the best (prefer a real download with a url > has media > has
-/// thumbnails > most recently enqueued) and drop the rest. Returns true if any
+/// keep the **newest** (most recently enqueued) item and subsume the rest
+/// into it before dropping them. The survivor keeps its own id and queue
+/// position (so the card the user was watching stays put -- the common case
+/// is a re-download of a file already on disk, where the just-finished item
+/// is newest); each older item's state (url if the survivor has none, plus
+/// title / duration / media / thumbnail / thumbnails the survivor is
+/// missing) is merged into the survivor so nothing probed or thumbnailed on
+/// the older item is lost. A `toast` SSE event announces the de-duplication
+/// so it isn't silently buried in the download stack. Returns true if any
 /// item was removed.
 async fn dedupe_done_per_filename(state: &Arc<AppState>) -> bool {
     let mut by_file: HashMap<String, Vec<u64>> = HashMap::new();
@@ -107,28 +118,84 @@ async fn dedupe_done_per_filename(state: &Arc<AppState>) -> bool {
         }
     }
 
-    let mut to_remove: Vec<u64> = Vec::new();
+    // For each filename with duplicates, pick the newest id (the survivor);
+    // subsume each older item's state into the survivor, then remove the
+    // older items. Snapshot everything we need under one lock, mutate under
+    // the next.
+    struct Dedupe {
+        survivor_id: u64,
+        older_ids: Vec<u64>,
+        filename: String,
+    }
+    let mut plans: Vec<Dedupe> = Vec::new();
     for ids in by_file.values() {
         if ids.len() < 2 {
             continue;
         }
-        // Pick the best id; the rest are removed.
         let q = state.queue.lock().await;
-        let best = ids
+        // Newest by enqueued_at, breaking ties by id (higher == newer).
+        let survivor_id = ids
             .iter()
             .copied()
-            .max_by_key(|id| q.get(*id).map(score_item));
+            .max_by_key(|id| q.get(*id).map(|i| (i.enqueued_at.unix_timestamp(), i.id)))
+            .expect("non-empty group");
+        let filename = q
+            .get(survivor_id)
+            .and_then(|i| i.filename.clone())
+            .unwrap_or_default();
+        let older_ids: Vec<u64> = ids
+            .iter()
+            .copied()
+            .filter(|id| *id != survivor_id)
+            .collect();
         drop(q);
-        for id in ids {
-            if Some(*id) != best {
-                to_remove.push(*id);
-            }
-        }
+        plans.push(Dedupe {
+            survivor_id,
+            older_ids,
+            filename,
+        });
     }
 
-    if to_remove.is_empty() {
+    if plans.is_empty() {
         return false;
     }
+
+    let mut to_remove: Vec<u64> = Vec::new();
+    let mut toast_msgs: Vec<String> = Vec::new();
+    for plan in &plans {
+        let n = plan.older_ids.len();
+        // Subsume each older item's state into the survivor, then drop them.
+        // Snapshot the older items (immutable borrow) before mutating the
+        // survivor (mutable borrow) -- the queue can't be borrowed both ways
+        // at once.
+        let older_snaps: Vec<QueueItem> = {
+            let q = state.queue.lock().await;
+            plan.older_ids
+                .iter()
+                .filter_map(|id| q.get(*id).cloned())
+                .collect()
+        };
+        {
+            let mut q = state.queue.lock().await;
+            if let Some(survivor) = q.get_mut(plan.survivor_id) {
+                for older in &older_snaps {
+                    subsume(survivor, older);
+                }
+            }
+        }
+        for &old_id in &plan.older_ids {
+            to_remove.push(old_id);
+        }
+        let label = if plan.filename.is_empty() {
+            format!("item {}", plan.survivor_id)
+        } else {
+            plan.filename.clone()
+        };
+        toast_msgs.push(format!(
+            "De-duplicated \u{201c}{label}\u{201d}: kept the latest, merged {n} older duplicate(s)."
+        ));
+    }
+
     let n = {
         let mut q = state.queue.lock().await;
         let mut n = 0;
@@ -140,21 +207,42 @@ async fn dedupe_done_per_filename(state: &Arc<AppState>) -> bool {
         n
     };
     if n > 0 {
-        tracing::info!("dedupe: removed {n} duplicate Done item(s)");
+        tracing::info!("dedupe: subsumed {n} duplicate Done item(s) into the newest");
+        // Surface the de-duplication so it isn't buried in the download stack:
+        // one toast per filename that was collapsed.
+        for msg in &toast_msgs {
+            state.emit(Event::Toast(render::render_ack(msg, false)));
+        }
     }
     n > 0
 }
 
-/// Higher is better. Prefer a real download (non-empty url) over an import,
-/// then one already carrying media + thumbnails, then the most recently
-/// enqueued.
-fn score_item(item: &QueueItem) -> (u8, u8, u8, i64) {
-    (
-        u8::from(!item.url.is_empty()),
-        u8::from(item.media.is_some()),
-        u8::from(!item.thumbnails.is_empty()),
-        item.enqueued_at.unix_timestamp(),
-    )
+/// Merge `from`'s state into `into` (the survivor) for any field `into` is
+/// missing, so a de-duplicated older item's probed media / generated
+/// thumbnails / resolved url + title are not lost when it is dropped. The
+/// survivor's own values always win (it is the newest -- the item the user
+/// was watching); only blanks are filled from the older item. `logs` and
+/// `error` are *not* subsumed: the survivor keeps its own download output and
+/// (it is `Done`) has no error to inherit.
+fn subsume(into: &mut QueueItem, from: &QueueItem) {
+    if into.url.is_empty() && !from.url.is_empty() {
+        into.url = from.url.clone();
+    }
+    if into.title.is_none() {
+        into.title = from.title.clone();
+    }
+    if into.duration.is_none() {
+        into.duration = from.duration;
+    }
+    if into.media.is_none() {
+        into.media = from.media.clone();
+    }
+    if into.thumbnail.is_none() {
+        into.thumbnail = from.thumbnail.clone();
+    }
+    if into.thumbnails.is_empty() {
+        into.thumbnails = from.thumbnails.clone();
+    }
 }
 
 /// Step 2: prune Done items whose on-disk video has been moved or deleted.
@@ -552,37 +640,64 @@ fn spawn_thumbnail_generation(state: Arc<AppState>) {
 mod tests {
     use super::*;
 
+    /// `subsume` fills the survivor's blanks from the older item but never
+    /// overwrites values the survivor already has -- it is the newest (the
+    /// item the user was watching), so its own url / title / media / thumbs
+    /// win; only missing fields are inherited. `logs` and `error` are never
+    /// subsumed.
     #[test]
-    fn score_prefers_url_then_media_then_thumbs_then_recent() {
+    fn subsume_fills_blanks_without_overwriting() {
         let now = time::OffsetDateTime::now_utc();
-        let mut a = QueueItem::new(1, String::new()); // imported
-        a.status = ItemStatus::Done;
-        a.filename = Some("x.mp4".into());
-        a.enqueued_at = now;
+        // Survivor: a freshly-finished re-download. It has its own url + a
+        // log line, but no media / thumbnails yet (those are filled by the
+        // later probe + thumbnail steps).
+        let mut survivor = QueueItem::new(2, "https://u".into());
+        survivor.status = ItemStatus::Done;
+        survivor.filename = Some("x.mp4".into());
+        survivor.enqueued_at = now + time::Duration::seconds(10);
+        survivor.logs.push("survivor log".into());
 
-        let mut b = QueueItem::new(2, "https://u".into()); // real download
-        b.status = ItemStatus::Done;
-        b.filename = Some("x.mp4".into());
-        b.enqueued_at = now;
+        // Older: a previous Done item for the same file, already probed +
+        // thumbnailed.
+        let mut older = QueueItem::new(1, "https://u".into());
+        older.status = ItemStatus::Done;
+        older.filename = Some("x.mp4".into());
+        older.title = Some("Title".into());
+        older.duration = Some(120.0);
+        older.media = Some(MediaInfo::default());
+        older.thumbnail = Some("t.jpg".into());
+        older.thumbnails = vec!["a.jpg".into(), "b.jpg".into()];
+        older.enqueued_at = now;
+        older.logs.push("older log".into());
 
-        // b has a url -> scores higher even though both lack media/thumbs.
-        assert!(score_item(&b) > score_item(&a));
+        subsume(&mut survivor, &older);
 
-        // Media boosts a real download above one without media.
-        let mut c = QueueItem::new(3, "https://u".into());
-        c.status = ItemStatus::Done;
-        c.filename = Some("x.mp4".into());
-        c.media = Some(MediaInfo::default());
-        c.enqueued_at = now;
-        assert!(score_item(&c) > score_item(&b));
+        // Survivor keeps its own url (was non-empty).
+        assert_eq!(survivor.url, "https://u");
+        // Blanks filled from the older item.
+        assert_eq!(survivor.title.as_deref(), Some("Title"));
+        assert_eq!(survivor.duration, Some(120.0));
+        assert!(survivor.media.is_some());
+        assert_eq!(survivor.thumbnail.as_deref(), Some("t.jpg"));
+        assert_eq!(survivor.thumbnails, vec!["a.jpg", "b.jpg"]);
+        // Logs are NOT subsumed (survivor keeps its own download output).
+        assert_eq!(survivor.logs, vec!["survivor log"]);
+    }
 
-        // More recent enqueued_at breaks ties among otherwise-equal items
-        // (both have a url and media).
-        let mut d = QueueItem::new(4, "https://u".into());
-        d.status = ItemStatus::Done;
-        d.filename = Some("x.mp4".into());
-        d.media = Some(MediaInfo::default());
-        d.enqueued_at = now + time::Duration::seconds(10);
-        assert!(score_item(&d) > score_item(&c));
+    /// When the survivor has no url (e.g. an imported item that turned out
+    /// to collide with a real download's state file), the older item's url is
+    /// inherited so the merged item still links back to its source.
+    #[test]
+    fn subsume_inherits_url_when_survivor_lacks_one() {
+        let mut survivor = QueueItem::new(5, String::new()); // imported
+        survivor.status = ItemStatus::Done;
+        survivor.filename = Some("x.mp4".into());
+
+        let mut older = QueueItem::new(1, "https://u".into());
+        older.status = ItemStatus::Done;
+        older.filename = Some("x.mp4".into());
+
+        subsume(&mut survivor, &older);
+        assert_eq!(survivor.url, "https://u");
     }
 }

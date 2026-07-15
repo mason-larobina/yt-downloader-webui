@@ -55,9 +55,11 @@
   <div id="status-cancel" sse-swap="status-cancel" hx-swap="innerHTML"></div>
 </div>
 
-<!-- Transient ack toast: cancel/retry/delete actions swap a short
-     confirmation here; auto-cleared after a few seconds. -->
-<div id="ack" class="ack-toast"></div>
+<!-- Transient ack toast: POST actions (cancel/retry/delete/rescan) swap a
+     short confirmation here; the `toast` SSE event (e.g. a download that was
+     de-duplicated against an existing item) swaps in too. Either way it
+     auto-clears after a few seconds via the afterSwap listener below. -->
+<div id="ack" class="ack-toast" sse-swap="toast" hx-swap="innerHTML"></div>
 
 <script>
   // Global SSE connection (htmx sse extension picks this up at body level).
