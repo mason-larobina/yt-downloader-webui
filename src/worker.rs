@@ -117,8 +117,22 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
         )
     };
 
+    // Sidecar for yt-dlp's `--print-to-file after_move:…`: the authoritative
+    // final filename, written once on success. Clear any stale file first --
+    // yt-dlp opens it in append mode, so a leftover from a prior attempt of
+    // the same item id (e.g. a retry after failure) would otherwise append a
+    // second line and our single-line read would return the stale name.
+    let sidefile = ytdlp::after_move_sidefile(item_id);
+    let _ = tokio::fs::remove_file(&sidefile).await;
+
     // Build + spawn.
-    let mut child = ytdlp::build(&yt_dlp, browser.as_deref(), &download_dir, &url);
+    let mut child = ytdlp::build(
+        &yt_dlp,
+        browser.as_deref(),
+        &download_dir,
+        &sidefile,
+        &url,
+    );
     let child_result = child.spawn();
     let mut child = match child_result {
         Ok(c) => c,
@@ -188,6 +202,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                         item.cancel = None;
                     }
                 }
+                let _ = tokio::fs::remove_file(&sidefile).await;
                 emit_final(state, Some(item_id)).await;
                 state.persist().await;
                 return;
@@ -204,6 +219,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                         item.cancel = None;
                     }
                 }
+                let _ = tokio::fs::remove_file(&sidefile).await;
                 emit_final(state, Some(item_id)).await;
                 state.persist().await;
                 return;
@@ -240,6 +256,7 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
                 item.cancel = None;
             }
             drop(q);
+            let _ = tokio::fs::remove_file(&sidefile).await;
             emit_final(state, Some(item_id)).await;
             state.persist().await;
             return;
@@ -259,6 +276,15 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
             if success {
                 item.status = ItemStatus::Done;
                 item.progress = None;
+                // Authoritative final filename from yt-dlp's `after_move`
+                // sidecar. Fires once, post-merge/move, for every download
+                // shape -- including the merge case (where the last progress
+                // tick named an intermediate `.fNNN.*` stream) and the
+                // already-downloaded case (where yt-dlp emitted no progress
+                // JSON at all). Overrides whatever was captured live.
+                if let Some(f) = read_after_move_filename(&sidefile).await {
+                    item.filename = Some(f);
+                }
                 tracing::info!("item {item_id} done");
             } else {
                 item.status = ItemStatus::Failed;
@@ -287,6 +313,9 @@ async fn run_download(state: &Arc<AppState>, item_id: u64) {
     if success {
         tokio::spawn(crate::import::reconcile(state.clone()));
     }
+    // Best-effort sidecar cleanup for the failure path (on success the file
+    // was already removed by `read_after_move_filename`).
+    let _ = tokio::fs::remove_file(&sidefile).await;
 }
 
 /// Read lines from a child pipe and forward them to `tx`.
@@ -325,50 +354,25 @@ async fn drain(rx: &mut mpsc::Receiver<String>) {
     }
 }
 
-/// Extract the on-disk filename yt-dlp is about to write (or just reported it
-/// already wrote) from one of its `[download]` status lines:
+/// Read yt-dlp's `--print-to-file after_move:…` sidecar and return the final
+/// on-disk filename's **basename**. The file holds one JSON line shaped
+/// `{"status":"after_move","filename":"<abs path>"}`. Returns `None` if the
+/// file is absent (yt-dlp failed before `after_move` fired -- e.g. an
+/// extraction error) or malformed; non-fatal. Removes the file regardless so
+/// nothing accumulates across retries of the same item id.
 ///
-///   * `[download] Destination: <path>`
-///     -- emitted before yt-dlp starts writing a new file.
-///   * `[download] <path> has already been downloaded`
-///     -- emitted when the file already exists on disk; yt-dlp then exits
-///     success **without** emitting any progress JSON or a `Destination:`
-///     line, so this is the only place we learn the filename. Without it
-///     the Done card would have no `filename` and thus no download/open
-///     buttons (and the ffmpeg thumbnail fallback would be skipped).
-///
-/// Returns the bare basename (last path segment). `None` for any other line.
-fn extract_dest_filename(text: &str) -> Option<String> {
-    let path = text
-        .strip_prefix("[download] Destination:")
-        .map(|s| s.trim())
-        .or_else(|| {
-            let s = text.strip_prefix("[download] ")?;
-            let s = s.strip_suffix(" has already been downloaded")?;
-            Some(s.trim())
-        })?;
+/// This supersedes the old `[Merger] Merging formats into "<path>"` and
+/// `[download] <path> has already been downloaded` text scrapes: it is the
+/// authoritative final name for *every* download shape, including the merge
+/// case (where progress-tick `filename` only ever names an intermediate
+/// `.fNNN.*` stream) and the already-downloaded case (where yt-dlp emits zero
+/// progress JSON).
+async fn read_after_move_filename(sidefile: &std::path::Path) -> Option<String> {
+    let text = tokio::fs::read_to_string(sidefile).await.ok()?;
+    let _ = tokio::fs::remove_file(sidefile).await;
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let path = value.get("filename")?.as_str()?;
     Some(path.rsplit('/').next().unwrap_or(path).to_string())
-}
-
-/// Extract the final on-disk filename from yt-dlp's `[Merger]` status line:
-///
-///   `[Merger] Merging formats into "<path>"`
-///
-/// yt-dlp emits this *after* it has downloaded every requested stream when a
-/// target container (e.g. `-S ext:mp4` / `--merge-output-format mp4`) is in
-/// effect. Each stream's `[download] Destination:`/progress tick names only an
-/// intermediate per-stream temp file (`.f399.mp4`, `.f141.m4a`, ...), and the
-/// last progress tick wins in [`handle_line`], leaving the item labelled with a
-/// `.m4a`/`.f141.*` intermediate instead of the real merged output. The
-/// `[Merger]` line is the authoritative final name, so it must override any
-/// previously captured filename. Returns the bare basename. `None` otherwise.
-fn extract_merger_filename(text: &str) -> Option<String> {
-    let s = text.strip_prefix("[Merger] Merging formats into")?;
-    let s = s.trim();
-    // yt-dlp quotes the path: `Merging formats into "/abs/path.mp4"`.
-    let s = s.strip_prefix('"')?;
-    let s = s.strip_suffix('"')?;
-    Some(s.rsplit('/').next().unwrap_or(s).to_string())
 }
 
 /// Handle one parsed output line: update active item + emit events.
@@ -461,6 +465,15 @@ async fn handle_line(
             // `status: "error"` only for mid-download aborts; extraction /
             // format failures print `ERROR: ...` to stderr and exit non-zero,
             // so we must harvest the line here. Last ERROR wins (most specific).
+            //
+            // This is the only text-line scrape that remains: there is no
+            // structured equivalent for extraction/format failures (yt-dlp
+            // prints `ERROR:` to stderr and exits non-zero; `after_move` does
+            // not fire on failure). The filename is now taken authoritatively
+            // from the `--print-to-file after_move:…` sidecar in
+            // `run_download`, so the old `[Merger] Merging formats into` and
+            // `[download] …has already been downloaded` / `Destination:` text
+            // scrapes are gone.
             if let Some(rest) = text.strip_prefix("ERROR:") {
                 let msg = rest.trim();
                 if !msg.is_empty() {
@@ -481,50 +494,6 @@ async fn handle_line(
                         let q = state.queue.lock().await;
                         state.emit(Event::Queue(render::render_queue(&q)));
                     }
-                }
-            }
-
-            // Try to extract a filename from yt-dlp's status lines (see
-            // `extract_dest_filename`). Intermediate per-stream destinations
-            // only fill in the name when nothing is set yet.
-            let dest_filename = extract_dest_filename(&text);
-
-            if let Some(f) = dest_filename {
-                let mut need_queue = false;
-                {
-                    let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id)
-                        && item.filename.is_none()
-                    {
-                        item.filename = Some(f);
-                        need_queue = true;
-                    }
-                }
-                if need_queue {
-                    let q = state.queue.lock().await;
-                    state.emit(Event::Queue(render::render_queue(&q)));
-                }
-            }
-
-            // The `[Merger]` line names the final merged file when a target
-            // container (e.g. mp4) remuxes separate audio+video streams. It is
-            // emitted *after* all per-stream downloads, so it is the
-            // authoritative final name and must override the intermediate
-            // `.f399.mp4` / `.f141.m4a` filenames captured above.
-            if let Some(f) = extract_merger_filename(&text) {
-                let mut need_queue = false;
-                {
-                    let mut q = state.queue.lock().await;
-                    if let Some(item) = q.get_mut(item_id)
-                        && item.filename.as_deref() != Some(&f)
-                    {
-                        item.filename = Some(f);
-                        need_queue = true;
-                    }
-                }
-                if need_queue {
-                    let q = state.queue.lock().await;
-                    state.emit(Event::Queue(render::render_queue(&q)));
                 }
             }
 
@@ -810,80 +779,52 @@ pub fn probe_stream(
 mod tests {
     use super::*;
 
-    /// `[download] Destination: <path>` yields the bare basename.
-    #[test]
-    fn extract_dest_filename_destination() {
+    /// A well-formed `after_move` sidecar yields the bare basename of the
+    /// final on-disk path.
+    #[tokio::test]
+    async fn read_after_move_filename_parses_basename() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("yt-dl-webui-test-after-move-ok.json");
+        std::fs::write(
+            &path,
+            r#"{"status":"after_move","filename":"/tmp/dl/Big Buck Bunny [aqz-KE-bpKQ].mp4"}
+"#,
+        )
+        .unwrap();
         assert_eq!(
-            extract_dest_filename("[download] Destination: /tmp/redl/Video.mp4"),
-            Some("Video.mp4".to_string())
-        );
-        // Leading/trailing whitespace tolerated.
-        assert_eq!(
-            extract_dest_filename("[download] Destination:   /a/b/Cool Clip.webm  "),
-            Some("Cool Clip.webm".to_string())
-        );
-    }
-
-    /// `[download] <path> has already been downloaded` is the line yt-dlp
-    /// prints when re-downloading a URL whose file already exists. It emits
-    /// no progress JSON and no `Destination:` line, so this is the only
-    /// source of the filename -- without it the Done card has no download /
-    /// open buttons. Regression for the reported bug.
-    #[test]
-    fn extract_dest_filename_already_downloaded() {
-        assert_eq!(
-            extract_dest_filename(
-                "[download] /tmp/redl/Big Buck Bunny [aqz-KE-bpKQ].mp4 has already been downloaded"
-            ),
+            read_after_move_filename(&path).await,
             Some("Big Buck Bunny [aqz-KE-bpKQ].mp4".to_string())
         );
+        // File is removed after a successful read.
+        assert!(!path.exists());
     }
 
-    /// Unrelated log lines yield no filename.
-    #[test]
-    fn extract_dest_filename_other_lines() {
-        assert_eq!(
-            extract_dest_filename("[youtube] aqz-KE-bpKQ: Downloading webpage"),
-            None
-        );
-        assert_eq!(
-            extract_dest_filename("[info] aqz-KE-bpKQ: Downloading 1 format(s): 399+258"),
-            None
-        );
-        assert_eq!(extract_dest_filename("ERROR: video unavailable"), None);
-        assert_eq!(extract_dest_filename(""), None);
+    /// A missing sidecar (yt-dlp failed before `after_move` fired) yields
+    /// `None` -- non-fatal; the item keeps whatever filename the live
+    /// progress ticks captured (or `None`).
+    #[tokio::test]
+    async fn read_after_move_filename_missing_is_none() {
+        let path = std::env::temp_dir().join("yt-dl-webui-test-after-move-absent.json");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read_after_move_filename(&path).await, None);
     }
 
-    /// `[Merger] Merging formats into "<path>"` yields the bare basename of
-    /// the final merged file. Regression for the reported bug where, with a
-    /// target mp4 container, the item ended up labelled with the last
-    /// intermediate stream's name (`.f141.m4a`) instead of the merged `.mp4`.
-    #[test]
-    fn extract_merger_filename_basic() {
-        assert_eq!(
-            extract_merger_filename(
-                "[Merger] Merging formats into \"/home/lambo/Downloads/yt-dlp/Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].mp4\""
-            ),
-            Some("Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].mp4".to_string())
-        );
+    /// A malformed sidecar yields `None` but is still removed so a corrupt
+    /// leftover can't poison the next attempt of the same item id.
+    #[tokio::test]
+    async fn read_after_move_filename_malformed_is_none_but_removed() {
+        let path = std::env::temp_dir().join("yt-dl-webui-test-after-move-bad.json");
+        std::fs::write(&path, "not json").unwrap();
+        assert_eq!(read_after_move_filename(&path).await, None);
+        assert!(!path.exists());
     }
 
-    /// Non-merger lines (including the intermediate `[download] Destination`
-    /// lines for per-stream temp files) must not match the merger extractor.
-    #[test]
-    fn extract_merger_filename_other_lines() {
-        assert_eq!(
-            extract_merger_filename(
-                "[download] Destination: /tmp/redl/Awaken from the Dark Slumber (Spring) [jgoOzh_DZuw].f141.m4a"
-            ),
-            None
-        );
-        assert_eq!(
-            extract_merger_filename(
-                "Deleting original file /tmp/redl/x.f141.m4a (pass -k to keep)"
-            ),
-            None
-        );
-        assert_eq!(extract_merger_filename(""), None);
+    /// A sidecar missing the `filename` key yields `None`.
+    #[tokio::test]
+    async fn read_after_move_filename_missing_key_is_none() {
+        let path = std::env::temp_dir().join("yt-dl-webui-test-after-move-nokey.json");
+        std::fs::write(&path, r#"{"status":"after_move"}"#).unwrap();
+        assert_eq!(read_after_move_filename(&path).await, None);
+        assert!(!path.exists());
     }
 }

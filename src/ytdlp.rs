@@ -1,5 +1,5 @@
 //! Build the `yt-dlp` `Command` for a single queued URL.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::process::Command;
@@ -8,7 +8,9 @@ use tokio::process::Command;
 ///
 /// ```text
 /// yt-dlp --cookies-from-browser <b> --newline \
-///        --progress-template '%(progress)j' -P <dir> <URL>
+///        --progress-template '%(progress)j' \
+///        --print-to-file 'after_move:{"status":"after_move","filename":%(filepath)j}' <sidefile> \
+///        -P <dir> <URL>
 /// ```
 ///
 /// URLs are passed as a single `Command::arg`, never concatenated into a
@@ -19,13 +21,34 @@ use tokio::process::Command;
 /// best anything (yt-dlp picks whatever streams the site offers).
 /// `--merge-output-format mp4` ensures merged containers are mp4 even when the
 /// best available video/audio come as separate non-mp4 streams.
-pub fn build(yt_dlp: &str, browser: Option<&str>, download_dir: &Path, url: &str) -> Command {
+///
+/// `--print-to-file after_move:…` writes one JSON line to `sidefile` with the
+/// **actual final on-disk path** after all post-processing (merge, remux,
+/// move). It fires exactly once, on success, for *every* download shape
+/// -- including a fresh merge (where progress-tick `filename` only ever names
+/// an intermediate `.fNNN.*` stream) and an already-downloaded file (where
+/// yt-dlp emits *zero* progress JSON). The worker reads it after the child
+/// exits to set the authoritative filename, superseding the fragile
+/// `[Merger] Merging formats into` / `has already been downloaded` log scrapes
+/// (see `worker::read_after_move_filename`). Unlike `--print`, `--print-to-file`
+/// does **not** imply `--quiet`/`--simulate`, so the live progress JSON and text
+/// logs keep flowing to stdout/stderr unchanged.
+pub fn build(
+    yt_dlp: &str,
+    browser: Option<&str>,
+    download_dir: &Path,
+    sidefile: &Path,
+    url: &str,
+) -> Command {
     let mut cmd = Command::new(yt_dlp);
     if let Some(b) = browser {
         cmd.arg("--cookies-from-browser").arg(b);
     }
     cmd.arg("--newline");
     cmd.arg("--progress-template").arg("%(progress)j");
+    cmd.arg("--print-to-file")
+        .arg(r#"after_move:{"status":"after_move","filename":%(filepath)j}"#)
+        .arg(sidefile);
     cmd.arg("-P").arg(download_dir);
     cmd.arg("-f").arg(format_selector());
     cmd.arg("--merge-output-format").arg("mp4");
@@ -87,4 +110,16 @@ pub fn build_probe(yt_dlp: &str, browser: Option<&str>, url: &str) -> Command {
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
     cmd
+}
+
+/// The per-item path passed to `--print-to-file` so yt-dlp writes the
+/// authoritative `after_move` filename to a sidecar the worker reads after
+/// the child exits. Lives in the system temp dir (transient: created by
+/// yt-dlp, read + deleted by the worker immediately after the child exits);
+/// keyed by `item_id` so concurrent items never collide. The worker removes
+/// any stale file at this path *before* spawning yt-dlp, since yt-dlp opens it
+/// in append mode and would otherwise accumulate lines across retries of the
+/// same item id within a session.
+pub fn after_move_sidefile(item_id: u64) -> PathBuf {
+    std::env::temp_dir().join(format!("yt-dl-webui-{item_id}-after-move.json"))
 }
