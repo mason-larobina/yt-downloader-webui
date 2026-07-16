@@ -516,7 +516,6 @@ pub fn render_probe_area(url: &str) -> String {
 struct ProbeResultView {
     cards: Vec<ProbeCard>,
     error_msg: String,
-    n: usize,
 }
 
 struct ProbeCard {
@@ -558,7 +557,6 @@ pub fn render_probe_result(
         return ProbeResultView {
             cards: Vec::new(),
             error_msg: msg,
-            n: 0,
         }
         .render()
         .unwrap_or_default();
@@ -578,11 +576,9 @@ pub fn render_probe_result(
             }
         })
         .collect();
-    let n = view_cards.len();
     ProbeResultView {
         cards: view_cards,
         error_msg: String::new(),
-        n,
     }
     .render()
     .unwrap_or_default()
@@ -686,7 +682,7 @@ mod probe_result_tests {
             html.contains(r##"hx-get="/header""##),
             "cancel restores header"
         );
-        assert!(html.contains("Confirm ("));
+        assert!(html.contains(">Confirm<"), "confirm button present");
 
         let values = checkbox_values(&html);
         assert_eq!(values.len(), 2, "expected 2 cards, got {values:?}");

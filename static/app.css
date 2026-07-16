@@ -90,7 +90,7 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
   display: flex;
   justify-content: center;
   padding: 14px 16px 18px;
-  background: var(--bg);
+  background: var(--bg-2);
   border-top: 1px solid var(--line);
 }
 .app-footer-link {
@@ -111,7 +111,7 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
 /* ---------- topbar / header ---------- */
 .topbar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 12px 16px; background: var(--bg-2);
+  background: var(--bg-2);
   border-bottom: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
   flex: 0 0 auto;
@@ -121,7 +121,7 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
 
 /* ---------- submit (header input) ---------- */
 .submit {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 8px; padding: 12px 16px;
 }
 .submit input[type="text"] {
   flex: 1 1 auto; min-width: 0;
@@ -145,15 +145,23 @@ button {
 button:hover { background: #262b35; }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: 0.5; cursor: default; }
-/* Primary action buttons: bold brand gradient. */
-.submit button[type="submit"],
-.probe-actions button[type="submit"] {
-  background: var(--brand); color: var(--ink);
-  border: none; padding: 12px 22px; font-size: 15px; font-weight: 700;
-  box-shadow: var(--shadow-sm);
+/* "Add" primary action: the same neutral chassis + brand border/ring as the
+   probe result's Confirm button (see .probe-actions .probe-confirm below) --
+   neutral fill, 2px brand border, a translucent brand outer ring, and a
+   hover that widens the ring. It keeps a taller padding/font-size than the
+   probe buttons so its height matches the URL input it sits beside. */
+.submit button[type="submit"] {
+  background: var(--bg-3); color: var(--fg);
+  border: 2px solid var(--brand-solid); border-radius: 8px;
+  padding: 12px 22px; font-size: 15px; font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(167,139,250,0.30), var(--shadow-sm);
+  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, filter .12s ease, transform .05s ease;
 }
-.submit button[type="submit"]:hover,
-.probe-actions button[type="submit"]:hover { filter: brightness(1.05); background: var(--brand); }
+.submit button[type="submit"]:hover {
+  background: #262b35; filter: brightness(1.06);
+  box-shadow: 0 0 0 4px rgba(167,139,250,0.40), var(--shadow-sm);
+}
+.submit button[type="submit"]:active { transform: translateY(1px); }
 
 .header-err { display: block; color: var(--failed); font-size: 12px; font-weight: 600; margin-top: 5px; }
 
@@ -179,11 +187,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   from { box-shadow: 0 0 0 0 rgba(167,139,250,0.5); }
   to   { box-shadow: 0 0 0 6px rgba(167,139,250,0); }
 }
-.probe-cancel {
+.probe-head-cancel {
   font-size: 12px; font-weight: 600; padding: 3px 11px; background: var(--bg);
   border: 1px solid var(--line-2); color: var(--muted); border-radius: 6px;
 }
-.probe-cancel:hover { color: var(--fg); background: var(--bg-3); }
+.probe-head-cancel:hover { color: var(--fg); background: var(--bg-3); }
 .probe-stream {
   flex: 0 1 auto; max-height: 140px; overflow-y: auto;
   padding: 8px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -191,32 +199,24 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .probe-stream:empty { display: none; }
 .probe-stream .logline { color: var(--muted); white-space: pre-wrap; word-break: break-all; }
-.probe-cards { flex: 1 1 auto; overflow-y: auto; padding: 10px; min-height: 0; }
+/* #probe-cards is the swap target for the result fragment. It just wraps
+   the form; the form's header row sits on top and its card list scrolls
+   below (capped at 50vh), so this wrapper no longer owns height/scroll. */
+.probe-cards { flex: 0 1 auto; min-width: 0; }
 .probe-cards:empty { display: none; }
 
-/* 2-pane layout: toggling "show logs" on a successful probe turns the area
-   into a grid -- head on top spanning full width, cards (left) | logs (right)
-   side by side. Grid areas place the children regardless of DOM order, so the
-   stream (which precedes the cards in the HTML) still lands in the right
-   pane. */
-.probe-area.show-logs {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-areas: "head head" "cards logs";
-}
-.probe-area.show-logs .probe-head { grid-area: head; }
-.probe-area.show-logs .probe-cards { grid-area: cards; }
-.probe-area.show-logs .probe-stream {
-  grid-area: logs; flex: none; max-height: none; min-height: 0;
-  font-size: 13px; line-height: 1.5; border-left: 1px solid var(--line);
-}
-
 /* ---------- probe result cards ---------- */
-.probe-form { display: flex; flex-direction: column; gap: 10px; }
+/* The result is a header row (.probe-actions) over a scrollable card grid
+   (.probe-cards-list) -- mirroring the downloads pane (cards-head +
+   cards-list) rather than a boxed panel. */
+.probe-form { display: flex; flex-direction: column; }
+/* The card grid is the scroll region, capped at half the viewport so a long
+   playlist can't push the header off-screen; the header row above it stays
+   pinned. padding mirrors the downloads list gutters. */
 .probe-cards-list {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px; align-content: start;
+  max-height: 50vh; overflow-y: auto; padding: 12px 16px; background: var(--bg);
 }
 .probe-card {
   display: flex; gap: 10px; align-items: flex-start;
@@ -248,12 +248,74 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .probe-card-sub { color: var(--muted); font-size: 12px; margin-top: 4px; font-weight: 500; }
 .probe-card-sub .dur { font-family: monospace; font-weight: 700; color: var(--fg); }
+/* Action bar is the result's header row (like the downloads .cards-head):
+   a raised strip on top with a hairline below it separating it from the
+   card grid. Left group = Confirm + all/none, right = Cancel. */
 .probe-actions {
-  display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px;
-  position: sticky; bottom: 0; background: var(--bg-2);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 12px 16px; background: var(--bg-2);
+  border-bottom: 1px solid var(--line); flex: 0 0 auto;
 }
-.probe-actions button { font-size: 13px; padding: 7px 14px; }
-.probe-logs-toggle { color: var(--muted); }
+.probe-sel-actions { display: flex; align-items: center; gap: 8px; }
+/* Shared chassis for every probe-result action button: same height, radius
+   and weight, plus the layered "double" outline used by the probe cards and
+   the URL input -- a solid 2px border, a translucent outer ring, then a soft
+   drop shadow beneath. Confirm (left) and Cancel (right) recolour the border
+   + ring in their own hue; the bulk-select buttons stay neutral and light up
+   brand on hover. */
+.probe-actions button {
+  font-size: 13px; font-weight: 700;
+  padding: 9px 16px; border-radius: 8px;
+  border: 2px solid var(--line-2);
+  background: var(--bg-3); color: var(--fg);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35), var(--shadow-sm);
+  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, filter .12s ease, transform .05s ease;
+}
+.probe-actions button:hover { background: #262b35; }
+.probe-actions button:active { transform: translateY(1px); }
+/* Every result button shares the same neutral chassis; each one only differs
+   in its border + ring (shadow) hue and how it reacts to hover. The left group
+   (Confirm / all / none) uses the brand hue; the right (Cancel) + the error
+   Done button use the rose hue. */
+.probe-actions .probe-confirm {
+  border-color: var(--brand-solid);
+  box-shadow: 0 0 0 3px rgba(167,139,250,0.30), var(--shadow-sm);
+}
+.probe-actions .probe-confirm:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 0 4px rgba(167,139,250,0.40), var(--shadow-sm);
+}
+.probe-sel-actions button:hover {
+  border-color: var(--brand-solid);
+  box-shadow: 0 0 0 3px rgba(167,139,250,0.16), var(--shadow-sm);
+}
+.probe-actions .probe-cancel {
+  border-color: var(--failed);
+  box-shadow: 0 0 0 3px rgba(253,164,175,0.25), var(--shadow-sm);
+}
+.probe-actions .probe-cancel:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 0 0 4px rgba(253,164,175,0.36), var(--shadow-sm);
+}
+/* Error-state "Done" button: same neutral chassis as the result buttons, in
+   the brand hue so it reads as the primary (and only) action there. */
+.probe-done {
+  font-size: 13px; font-weight: 700;
+  padding: 9px 16px; border-radius: 8px;
+  border: 2px solid var(--brand-solid);
+  background: var(--bg-3); color: var(--fg);
+  box-shadow: 0 0 0 3px rgba(167,139,250,0.30), var(--shadow-sm);
+  transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, filter .12s ease, transform .05s ease;
+}
+.probe-done:hover { background: #262b35; filter: brightness(1.06);
+  box-shadow: 0 0 0 4px rgba(167,139,250,0.40), var(--shadow-sm); }
+.probe-done:active { transform: translateY(1px); }
+/* Shrink the probe action bar on narrow viewports so all four buttons stay on
+   one row (the sticky bar doesn't scroll horizontally). */
+@media (max-width: 560px) {
+  .probe-actions { gap: 6px; }
+  .probe-actions button { padding: 7px 11px; font-size: 12px; }
+}
 /* Once the probe finishes, a `.probe-form` (success) or `.probe-error` (failure)
    is swapped into `#probe-cards`. At that point the `.probe-head` row -- the
    flashing "probingâ¦" dot + its `cancel` button -- is stale and redundant:
@@ -263,14 +325,19 @@ button:disabled { opacity: 0.5; cursor: default; }
 .probe-area:has(.probe-form) .probe-head,
 .probe-area:has(.probe-error) .probe-head { display: none; }
 /* On a successful probe (a .probe-form is rendered into #probe-cards) the
-   streaming logs are hidden by default; the `show-logs` class (toggled by the
-   "show logs" button) switches to the 2-pane grid layout above and re-reveals
-   them in the right pane. On a failure (no form) the logs stay visible so the
-   error context is preserved. Pure CSS via :has() so it doesn't depend on SSE
-   swap lifecycle events firing. */
-.probe-area:has(.probe-form):not(.show-logs) .probe-stream { display: none; }
+   streaming logs are hidden -- the cards are the result. On a failure (no
+   form) the logs stay visible so the error context is preserved. Pure CSS via
+   :has() so it doesn't depend on SSE swap lifecycle events firing. */
+.probe-area:has(.probe-form) .probe-stream { display: none; }
+/* Once the result form is swapped in, drop the probing-state panel chrome
+   (border + shadow + corner radius) so the result reads like the downloads
+   card pane: a raised header row above a borderless card grid -- no outer
+   box around it. */
+.probe-area:has(.probe-form) {
+  border: none; box-shadow: none; border-radius: 0;
+}
 .probe-error {
-  display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
 }
 .probe-error .err { color: var(--failed); font-size: 13px; font-weight: 600; flex: 1 1 auto; word-break: break-word; }
 

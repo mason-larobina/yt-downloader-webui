@@ -5,6 +5,14 @@
   </div>
 {% else %}
   <form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML">
+    <div class="probe-actions">
+      <span class="probe-sel-actions">
+        <button type="submit" class="probe-confirm">Confirm</button>
+        <button type="button" onclick="probeSelectAll()" title="select all">all</button>
+        <button type="button" onclick="probeSelectNone()" title="deselect all">none</button>
+      </span>
+      <button type="button" class="probe-cancel" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button>
+    </div>
     <div class="probe-cards-list">
       {% for c in cards %}
         <label class="probe-card">
@@ -22,15 +30,6 @@
           </div>
         </label>
       {% endfor %}
-    </div>
-    <div class="probe-actions">
-      <button type="button" class="probe-logs-toggle" onclick="toggleProbeLogs()">show logs</button>
-      <span class="probe-sel-actions">
-        <button type="button" onclick="probeSelectAll()">select all</button>
-        <button type="button" onclick="probeSelectNone()">deselect all</button>
-      </span>
-      <button type="submit">Confirm (<span class="sel-count">{{ n }}</span>)</button>
-      <button type="button" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button>
     </div>
   </form>
 {% endif %}

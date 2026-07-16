@@ -116,21 +116,6 @@
     });
   })();
 
-  // Keep the "Confirm (N)" count in the probe result cards in sync with the
-  // checked checkboxes (the cards are swapped in dynamically by the `result`
-  // SSE event, so listen at the document level).
-  (function () {
-    document.addEventListener('change', function (e) {
-      var box = e.target;
-      if (!(box instanceof HTMLInputElement) || box.type !== 'checkbox') return;
-      var form = box.closest('.probe-form');
-      if (!form) return;
-      var n = form.querySelectorAll('input[name="entry"]:checked').length;
-      var el = form.querySelector('.sel-count');
-      if (el) el.textContent = String(n);
-    });
-  })();
-
   // Focus the URL input whenever the header is restored to its normal form
   // (initial load, after a probe is cancelled/confirmed/discarded) so the
   // user can paste the next URL without reaching for the mouse.
@@ -143,28 +128,14 @@
     });
   })();
 
-  // Toggle the probe streaming logs on/off once a probe has finished (the
-  // "show logs" / "hide logs" button in the actions row). The default
-  // hide-on-success is handled purely in CSS (see .probe-area:has(.probe-form)
-  // in app.css), so this only needs to flip the override class.
-  window.toggleProbeLogs = function () {
-    var area = document.getElementById('probe-area');
-    if (!area) return;
-    var showing = area.classList.toggle('show-logs');
-    var btn = area.querySelector('.probe-logs-toggle');
-    if (btn) btn.textContent = showing ? 'hide logs' : 'show logs';
-  };
-
   // Select / deselect every probe card at once (useful for large playlists).
-  // Setting .checked directly doesn't fire a change event, so we dispatch one
-  // so the existing listener updates the "Confirm (N)" count + the card's
-  // selected/unselected border styling (which is :has(input:checked) based).
+  // Selection styling is pure CSS (:has(input:checked) on the card label),
+  // so this just flips every checkbox -- no change event needed.
   function probeBulkSet(checked) {
     var form = document.querySelector('.probe-form');
     if (!form) return;
     form.querySelectorAll('input[name="entry"]').forEach(function (box) {
       box.checked = checked;
-      box.dispatchEvent(new Event('change', { bubbles: true }));
     });
   }
   window.probeSelectAll = function () { probeBulkSet(true); };
