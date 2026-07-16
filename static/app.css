@@ -68,7 +68,7 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
 }
 .main {
   flex: 1 1 auto;
-  background: var(--line);
+  background: var(--bg);
 }
 .pane {
   background: var(--bg);
