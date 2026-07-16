@@ -8,7 +8,7 @@ A standalone, single-binary web wrapper around [`yt-dlp`][ytdlp]. Paste a video 
 - **Global, shared state.** Open the app in a second tab and you see the same queue and the same active download. Still single-user, no auth — a local loopback tool.
 - **Queue survives restarts.** Pending and active items are persisted to a JSON file per item; on restart an interrupted download is re-queued.
 - **Playlist support.** Pasting a playlist URL probes it (without downloading) and presents the per-video entries as confirm cards — tick a subset to enqueue only those. A single video is enqueued directly.
-- **Downloads grid.** Each queued item is a card with open / download / delete actions once it finishes. The motivating use case: submit a URL from a phone, let the server fetch it with home cookies, then tap a card's *download* to pull the finished file onto the phone.
+- **Downloads grid.** Each queued item is a card with open / download / delete actions once it finishes. The motivating use case: submit a URL from a phone, let the server fetch it with home cookies, then tap a card's _download_ to pull the finished file onto the phone.
 - **Thumbnails.** Fetched during the probe (or generated from the downloaded file with ffmpeg as a fallback) and cached on disk.
 
 ## Prerequisites
@@ -74,10 +74,10 @@ Options:
 ### Probe → confirm → download
 
 1. **Paste a URL.** The header form posts to `/download`, which swaps in a probe area wired to its own SSE stream (`/probe?url=…`).
-1. **Probe.** `yt-dlp --flat-playlist -j` classifies the URL *without downloading anything* (extraction only, fast). Each output line is streamed live to the probe area.
-   - A **playlist** yields N entries — each entry's `url` is already the full per-video watch URL. They're rendered as confirm cards with checkboxes; tick a subset and *Confirm* to enqueue only those.
+1. **Probe.** `yt-dlp --flat-playlist -j` classifies the URL _without downloading anything_ (extraction only, fast). Each output line is streamed live to the probe area.
+   - A **playlist** yields N entries — each entry's `url` is already the full per-video watch URL. They're rendered as confirm cards with checkboxes; tick a subset and _Confirm_ to enqueue only those.
    - A **single video** yields one video dict. It's enqueued directly for download (using the original submitted URL, not the media URL the probe returned).
-   - A **failure** (e.g. `ERROR: Video unavailable`) renders an error line and a *Done* button that restores the header.
+   - A **failure** (e.g. `ERROR: Video unavailable`) renders an error line and a _Done_ button that restores the header.
 1. **Confirm** (`/confirm`) enqueues the approved items, kicks off background thumbnail fetches, and restores the header for the next URL.
 1. **Download.** A single background worker pops the next pending item, spawns one `yt-dlp` process with `--progress-template '%(progress)j'`, parses its structured progress JSON, and pushes live updates to every connected tab. Format selection prefers mp4 video ≤1080p + m4a audio, falling back through progressively looser selectors so it always grabs something rather than failing. `--merge-output-format mp4` keeps merged containers mp4.
 
