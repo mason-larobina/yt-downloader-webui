@@ -52,7 +52,17 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 
 // ------------------------------ static -------------------------------------
 
-const INDEX_HTML: &str = include_str!("../static/index.html");
+/// The entry document, embedded at compile time. The `__VERSION__` token in
+/// `static/index.html` is substituted with `CARGO_PKG_VERSION` once at startup
+/// (the footer shows the running version). The result is leaked to a
+/// `&'static [u8]` so the pointer-keyed ETag memoization in `asset_etag` /
+/// `serve_embedded` keeps working unchanged -- the leaked slice has a stable
+/// address for the program lifetime, just like a `const include_str!` slice.
+static INDEX_HTML: LazyLock<&'static [u8]> = LazyLock::new(|| {
+    let body =
+        include_str!("../static/index.html").replace("__VERSION__", env!("CARGO_PKG_VERSION"));
+    Box::leak(body.into_bytes().into_boxed_slice())
+});
 // Vendored third-party JS (non-minified so it's readable / debuggable in the
 // browser). Versions are pinned in the filenames so upgrading htmx also busts
 // any browser cache, so these are served as `immutable`. Sources:
@@ -173,7 +183,7 @@ async fn index(State(_state): State<Arc<AppState>>, req: HeaderMap) -> Response 
     // returning browser after an upgrade never renders a stale index that
     // references the old (now-404) pinned JS filenames.
     serve_embedded(
-        INDEX_HTML.as_bytes(),
+        *INDEX_HTML,
         "text/html; charset=utf-8",
         CACHE_NO_CACHE,
         &req,

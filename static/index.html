@@ -35,9 +35,17 @@
     </main>
   </div>
 
-  <!-- Subtle footer linking to the project source. -->
+  <!-- Subtle footer: download glyph over the project name + version, the
+       whole badge linking to the source repo. The version is baked in from
+       CARGO_PKG_VERSION (see INDEX_HTML in server.rs). -->
   <footer class="app-footer">
-    <a href="https://github.com/mason-larobina/yt-downloader-webui" target="_blank" rel="noopener noreferrer">source</a>
+    <a class="app-footer-link"
+       href="https://github.com/mason-larobina/yt-downloader-webui"
+       target="_blank" rel="noopener noreferrer"
+       title="View source on GitHub">
+      <svg class="app-footer-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15h16"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/><path d="M12 3v9"/><path d="m8 8 4 4 4-4"/></svg>
+      <span class="app-footer-text">yt-downloader-webui <span class="app-footer-ver">v__VERSION__</span> &middot; source</span>
+    </a>
   </footer>
 
 </div>
