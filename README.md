@@ -17,6 +17,14 @@ A standalone, single-binary web wrapper around [`yt-dlp`][ytdlp]. Paste a video 
 - [`ffmpeg`](https://ffmpeg.org/) on `PATH` (or pass `--ffmpeg`). Optional — only used to generate thumbnails when the probe found none; a missing ffmpeg is a warning, not fatal.
 - A browser profile for `--cookies-from-browser` (e.g. `firefox`), **optional**. Omit the flag to run without cookies; otherwise pass a browser name and yt-dlp reads its cookies on every invocation.
 
+## Install
+
+```sh
+cargo install yt-downloader-webui
+```
+
+Published on [crates.io](https://crates.io/crates/yt-downloader-webui). Builds and installs the `yt-downloader-webui` binary into `~/.cargo/bin` (ensure it's on your `PATH`).
+
 ## Build
 
 ```sh

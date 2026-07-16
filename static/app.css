@@ -84,6 +84,17 @@ em { font-style: normal; color: var(--brand-solid); font-weight: 600; }
   .pane-cards { min-height: 300px; }
 }
 
+/* ---------- app footer ---------- */
+.app-footer {
+  flex: 0 0 auto;
+  text-align: center;
+  padding: 12px 16px 16px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+.app-footer a { color: var(--muted); font-size: 12px; font-weight: 500; }
+.app-footer a:hover { color: var(--brand-solid); text-decoration: none; }
+
 /* ---------- topbar / header ---------- */
 .topbar {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;

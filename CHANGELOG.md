@@ -36,6 +36,8 @@ baseline that accumulated during initial development.
   publish flow; ad-hoc validation scripts persisted under `tests/`.
 - `systemd` user service file for running the server.
 - Site favicon derived from `download.svg`.
+- Subtle source-link footer on the index page.
+- `cargo install` instructions in the README (now on crates.io).
 
 ### Changed
 - Filename capture now uses `--print-to-file after_move` instead of log
