@@ -66,14 +66,11 @@
   --fs-2xl: 22px;
 
   /* ===== typography stacks ===== */
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* ===== misc motion + icon tokens ===== */
-  --press: translateY(
-    1px
-  ); /* shared :active depress for every clickable surface */
+  --press: translateY(1px); /* shared :active depress for every clickable surface */
   --icon: 16px; /* uniform inline icon size (footer / overlay / cancel) */
 
   /* ===== border widths ===== */
@@ -96,12 +93,7 @@
   --ring-rose-sm: 0 0 0 3px rgba(253, 164, 175, 0.25);
   --ring-rose-lg: 0 0 0 4px rgba(253, 164, 175, 0.36);
   --pulse-dot: rgba(167, 139, 250, 0.5);
-  --pulse-fade: rgba(
-    167,
-    139,
-    250,
-    0
-  ); /* transparent brand -- pulse out keyframe */
+  --pulse-fade: rgba(167, 139, 250, 0); /* transparent brand -- pulse out keyframe */
 
   /* ===== translucent fills / tints ===== */
   --chip-bg: rgba(20, 22, 28, 0.9); /* dark chip backdrop over thumbs */
@@ -467,13 +459,7 @@ button:disabled {
   background: var(--bar-bg);
 }
 .probe-thumb-placeholder {
-  background: repeating-linear-gradient(
-    45deg,
-    var(--bg-inset),
-    var(--bg-inset) 8px,
-    var(--bg-3) 8px,
-    var(--bg-3) 16px
-  );
+  background: repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 8px, var(--bg-3) 8px, var(--bg-3) 16px);
 }
 .probe-card-meta {
   flex: 1 1 auto;
@@ -807,13 +793,7 @@ button:disabled {
   background: var(--bar-bg);
 }
 .card-img-placeholder {
-  background: repeating-linear-gradient(
-    45deg,
-    var(--bg-inset),
-    var(--bg-inset) 10px,
-    var(--bg-3) 10px,
-    var(--bg-3) 20px
-  );
+  background: repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 10px, var(--bg-3) 10px, var(--bg-3) 20px);
 }
 
 /* status badge (bottom-left of thumb) -- solid status colour chip */
@@ -1016,13 +996,7 @@ button:disabled {
   background: var(--bar-bg);
 }
 .bn-img-placeholder {
-  background: repeating-linear-gradient(
-    45deg,
-    var(--bg-inset),
-    var(--bg-inset) 10px,
-    var(--bg-3) 10px,
-    var(--bg-3) 20px
-  );
+  background: repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 10px, var(--bg-3) 10px, var(--bg-3) 20px);
 }
 
 /* Line 1: title + (optional) "N queued" badge. */
@@ -1176,13 +1150,7 @@ button:disabled {
 .ip-thumb-placeholder {
   width: 100%;
   height: 100%;
-  background: repeating-linear-gradient(
-    45deg,
-    var(--bg-inset),
-    var(--bg-inset) 12px,
-    var(--bg-3) 12px,
-    var(--bg-3) 24px
-  );
+  background: repeating-linear-gradient(45deg, var(--bg-inset), var(--bg-inset) 12px, var(--bg-3) 12px, var(--bg-3) 24px);
 }
 
 /* Big text action buttons. */

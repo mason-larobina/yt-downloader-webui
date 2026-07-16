@@ -12,6 +12,7 @@ UI wrapper around `yt-dlp`. This version supersedes the unpublished `0.1.0`
 baseline that accumulated during initial development.
 
 ### Added
+
 - Standalone single-binary web UI wrapping `yt-dlp`: paste URLs, queue
   downloads, watch live progress in the browser.
 - Streaming `/probe` view with thumbnail fetching and `ffmpeg` fallback for
@@ -40,6 +41,7 @@ baseline that accumulated during initial development.
 - `cargo install` instructions in the README (now on crates.io).
 
 ### Changed
+
 - Filename capture now uses `--print-to-file after_move` instead of log
   scraping; the worker parses `[Merger]` lines for the final remuxed name.
 - Static and dynamic route cache policies tightened.
@@ -47,11 +49,13 @@ baseline that accumulated during initial development.
 - Queue persisted as one JSON file per URL.
 
 ### Fixed
+
 - Empty SSE payloads not dispatching in the browser.
 - Stale frame-count sets and orphaned thumbnails garbage-collected; missing
   video state files pruned.
 
 ### Internal
+
 - `e2e`/shell tests (network-dependent) are disabled in the default publish
   gate; `probe-flat-playlist.sh` requires a logged-in Firefox profile and is
   run by the operator.

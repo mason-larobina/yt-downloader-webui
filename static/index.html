@@ -1,56 +1,70 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>downloads</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.org-2.0.4.js"></script>
-<script src="/static/htmx-ext-sse-2.2.4.js"></script>
-</head>
-<body hx-ext="sse">
-<div class="app">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>downloads</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/htmx.org-2.0.4.js"></script>
+    <script src="/static/htmx-ext-sse-2.2.4.js"></script>
+  </head>
+  <body hx-ext="sse">
+    <div class="app">
+      <!-- Header: URL input (or, while probing, the streaming probe area). -->
+      <header class="topbar">
+        <div id="header-input" class="header-input">
+          <form class="submit" hx-post="/download" hx-target="#header-input" hx-swap="innerHTML" hx-disabled-elt="#dl-btn">
+            <input type="text" name="url" placeholder="Paste link here..." autocomplete="off" autofocus />
+            <button type="submit" id="dl-btn">Add</button>
+          </form>
+        </div>
+      </header>
 
-  <!-- Header: URL input (or, while probing, the streaming probe area). -->
-  <header class="topbar">
-    <div id="header-input" class="header-input">
-      <form class="submit"
-            hx-post="/download" hx-target="#header-input" hx-swap="innerHTML"
-            hx-disabled-elt="#dl-btn">
-        <input type="text" name="url" placeholder="Paste link here..."
-               autocomplete="off" autofocus>
-        <button type="submit" id="dl-btn">Add</button>
-      </form>
-    </div>
-  </header>
-
-  <!-- Main: downloads (cards). Per-video details live on the /item/:id page. -->
-  <div class="main">
-    <main class="pane pane-cards">
-      <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
-        <div class="cards-head"><span class="cards-title">downloads</span><span id="cards-count" class="cards-count" sse-swap="cards-count" hx-swap="innerHTML"></span><button class="cards-rescan" hx-post="/rescan" hx-target="#ack" hx-swap="innerHTML" title="re-scan the download directory for added/removed files">rescan</button></div>
-        <div id="cards-list" class="cards-list" sse-swap="card-added" hx-swap="afterbegin"><div class="empty">connecting&hellip;</div></div>
+      <!-- Main: downloads (cards). Per-video details live on the /item/:id page. -->
+      <div class="main">
+        <main class="pane pane-cards">
+          <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
+            <div class="cards-head">
+              <span class="cards-title">downloads</span><span id="cards-count" class="cards-count" sse-swap="cards-count" hx-swap="innerHTML"></span
+              ><button class="cards-rescan" hx-post="/rescan" hx-target="#ack" hx-swap="innerHTML" title="re-scan the download directory for added/removed files">rescan</button>
+            </div>
+            <div id="cards-list" class="cards-list" sse-swap="card-added" hx-swap="afterbegin">
+              <div class="empty">connecting&hellip;</div>
+            </div>
+          </div>
+        </main>
       </div>
-    </main>
-  </div>
 
-  <!-- Subtle footer: download glyph + project name + version, the whole
+      <!-- Subtle footer: download glyph + project name + version, the whole
        thing linking to the source repo. The version is baked in from
        CARGO_PKG_VERSION (see INDEX_HTML in server.rs). -->
-  <footer class="app-footer">
-    <a class="app-footer-link"
-       href="https://github.com/mason-larobina/yt-downloader-webui"
-       target="_blank" rel="noopener noreferrer"
-       title="View source on GitHub">
-      <svg class="app-footer-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15h16"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/><path d="M12 3v9"/><path d="m8 8 4 4 4-4"/></svg>
-      yt-downloader-webui <span class="app-footer-ver">v__VERSION__</span>
-    </a>
-  </footer>
+      <footer class="app-footer">
+        <a class="app-footer-link" href="https://github.com/mason-larobina/yt-downloader-webui" target="_blank" rel="noopener noreferrer" title="View source on GitHub">
+          <svg
+            class="app-footer-icon"
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M4 15h16" />
+            <path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
+            <path d="M12 3v9" />
+            <path d="m8 8 4 4 4-4" />
+          </svg>
+          yt-downloader-webui <span class="app-footer-ver">v__VERSION__</span>
+        </a>
+      </footer>
+    </div>
 
-</div>
-
-<!-- Floating progress banner (spotify-like). A stable 3-column shell
+    <!-- Floating progress banner (spotify-like). A stable 3-column shell
      (never swapped on the hot path): left = thumbnail, middle = 4 lines
      (title / last log line / progress bar / progress text), right = cancel
      button. Each slot is its own `sse-swap` target so a progress tick swaps
@@ -58,88 +72,94 @@
      what flashed when the whole `#status` `outerHTML` was swapped several
      times a second. Empty slots collapse via CSS `:empty`, and an empty
      `#status-title` hides the whole banner (the idle state). -->
-<div id="status" class="banner">
-  <div id="status-thumb" sse-swap="status-thumb" hx-swap="innerHTML"></div>
-  <div class="bn-middle">
-    <div class="bn-top" id="status-title" sse-swap="status-title" hx-swap="innerHTML"></div>
-    <div class="bn-log" id="status-log" sse-swap="status-log" hx-swap="innerHTML"></div>
-    <div class="bn-bar" id="status-bar" sse-swap="status-bar" hx-swap="innerHTML"></div>
-    <div class="bn-meta" id="status-meta" sse-swap="status-meta" hx-swap="innerHTML"></div>
-  </div>
-  <div id="status-cancel" sse-swap="status-cancel" hx-swap="innerHTML"></div>
-</div>
+    <div id="status" class="banner">
+      <div id="status-thumb" sse-swap="status-thumb" hx-swap="innerHTML"></div>
+      <div class="bn-middle">
+        <div class="bn-top" id="status-title" sse-swap="status-title" hx-swap="innerHTML"></div>
+        <div class="bn-log" id="status-log" sse-swap="status-log" hx-swap="innerHTML"></div>
+        <div class="bn-bar" id="status-bar" sse-swap="status-bar" hx-swap="innerHTML"></div>
+        <div class="bn-meta" id="status-meta" sse-swap="status-meta" hx-swap="innerHTML"></div>
+      </div>
+      <div id="status-cancel" sse-swap="status-cancel" hx-swap="innerHTML"></div>
+    </div>
 
-<!-- Transient ack toast: POST actions (cancel/retry/delete/rescan) swap a
+    <!-- Transient ack toast: POST actions (cancel/retry/delete/rescan) swap a
      short confirmation here; the `toast` SSE event (e.g. a download that was
      de-duplicated against an existing item) swaps in too. Either way it
      auto-clears after a few seconds via the afterSwap listener below. -->
-<div id="ack" class="ack-toast" sse-swap="toast" hx-swap="innerHTML"></div>
+    <div id="ack" class="ack-toast" sse-swap="toast" hx-swap="innerHTML"></div>
 
-<script>
-  // Global SSE connection (htmx sse extension picks this up at body level).
-  document.body.setAttribute('sse-connect', '/events');
+    <script>
+      // Global SSE connection (htmx sse extension picks this up at body level).
+      document.body.setAttribute("sse-connect", "/events");
 
-  // Transient ack toast: POST actions (cancel/retry/delete) swap a
-  // short confirmation into #ack; auto-clear it after a few seconds so it
-  // doesn't linger. (The live queue/progress state lives in the floating
-  // banner, not here.)
-  (function () {
-    var timer = null;
-    document.body.addEventListener('htmx:afterSwap', function (e) {
-      var target = e.detail && e.detail.target;
-      if (!target || target.id !== 'ack') return;
-      if (!target.textContent.trim()) return;
-      clearTimeout(timer);
-      timer = setTimeout(function () { target.textContent = ''; }, 4000);
-    });
-  })();
+      // Transient ack toast: POST actions (cancel/retry/delete) swap a
+      // short confirmation into #ack; auto-clear it after a few seconds so it
+      // doesn't linger. (The live queue/progress state lives in the floating
+      // banner, not here.)
+      (function () {
+        var timer = null;
+        document.body.addEventListener("htmx:afterSwap", function (e) {
+          var target = e.detail && e.detail.target;
+          if (!target || target.id !== "ack") return;
+          if (!target.textContent.trim()) return;
+          clearTimeout(timer);
+          timer = setTimeout(function () {
+            target.textContent = "";
+          }, 4000);
+        });
+      })();
 
-  // Intercept Ctrl/Cmd+V anywhere on the page: drop the clipboard contents
-  // into the URL field and submit the form immediately, so the user can
-  // paste a URL without first focusing the input. Skipped while probing
-  // (no URL input present) and never hijacks paste into another text field.
-  (function () {
-    document.addEventListener('paste', function (e) {
-      var input = document.querySelector('#header-input input[name="url"]');
-      if (!input) return; // header is showing the probe area
-      var t = e.target;
-      if ((t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) && t !== input) {
-        return; // let native paste happen in other fields
+      // Intercept Ctrl/Cmd+V anywhere on the page: drop the clipboard contents
+      // into the URL field and submit the form immediately, so the user can
+      // paste a URL without first focusing the input. Skipped while probing
+      // (no URL input present) and never hijacks paste into another text field.
+      (function () {
+        document.addEventListener("paste", function (e) {
+          var input = document.querySelector('#header-input input[name="url"]');
+          if (!input) return; // header is showing the probe area
+          var t = e.target;
+          if ((t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) && t !== input) {
+            return; // let native paste happen in other fields
+          }
+          var text = e.clipboardData && e.clipboardData.getData("text");
+          if (!text) return;
+          text = text.trim();
+          if (!text) return;
+          e.preventDefault();
+          input.value = text;
+          if (input.form) input.form.requestSubmit();
+        });
+      })();
+
+      // Focus the URL input whenever the header is restored to its normal form
+      // (initial load, after a probe is cancelled/confirmed/discarded) so the
+      // user can paste the next URL without reaching for the mouse.
+      (function () {
+        document.body.addEventListener("htmx:afterSwap", function (e) {
+          var target = e.detail && e.detail.target;
+          if (!target || target.id !== "header-input") return;
+          var input = target.querySelector('input[name="url"]');
+          if (input) input.focus();
+        });
+      })();
+
+      // Select / deselect every probe card at once (useful for large playlists).
+      // Selection styling is pure CSS (:has(input:checked) on the card label),
+      // so this just flips every checkbox -- no change event needed.
+      function probeBulkSet(checked) {
+        var form = document.querySelector(".probe-form");
+        if (!form) return;
+        form.querySelectorAll('input[name="entry"]').forEach(function (box) {
+          box.checked = checked;
+        });
       }
-      var text = e.clipboardData && e.clipboardData.getData('text');
-      if (!text) return;
-      text = text.trim();
-      if (!text) return;
-      e.preventDefault();
-      input.value = text;
-      if (input.form) input.form.requestSubmit();
-    });
-  })();
-
-  // Focus the URL input whenever the header is restored to its normal form
-  // (initial load, after a probe is cancelled/confirmed/discarded) so the
-  // user can paste the next URL without reaching for the mouse.
-  (function () {
-    document.body.addEventListener('htmx:afterSwap', function (e) {
-      var target = e.detail && e.detail.target;
-      if (!target || target.id !== 'header-input') return;
-      var input = target.querySelector('input[name="url"]');
-      if (input) input.focus();
-    });
-  })();
-
-  // Select / deselect every probe card at once (useful for large playlists).
-  // Selection styling is pure CSS (:has(input:checked) on the card label),
-  // so this just flips every checkbox -- no change event needed.
-  function probeBulkSet(checked) {
-    var form = document.querySelector('.probe-form');
-    if (!form) return;
-    form.querySelectorAll('input[name="entry"]').forEach(function (box) {
-      box.checked = checked;
-    });
-  }
-  window.probeSelectAll = function () { probeBulkSet(true); };
-  window.probeSelectNone = function () { probeBulkSet(false); };
-</script>
-</body>
+      window.probeSelectAll = function () {
+        probeBulkSet(true);
+      };
+      window.probeSelectNone = function () {
+        probeBulkSet(false);
+      };
+    </script>
+  </body>
 </html>

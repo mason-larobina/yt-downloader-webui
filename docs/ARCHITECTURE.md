@@ -248,19 +248,9 @@ Deletes the named file from `cfg.download_dir` (same path-traversal guard as `/f
 <div id="cards" class="cards" sse-swap="queue" hx-swap="innerHTML">
   <div class="cards-head">
     <span class="cards-title">downloads</span>
-    <span
-      id="cards-count"
-      class="cards-count"
-      sse-swap="cards-count"
-      hx-swap="innerHTML"
-    ></span>
+    <span id="cards-count" class="cards-count" sse-swap="cards-count" hx-swap="innerHTML"></span>
   </div>
-  <div
-    id="cards-list"
-    class="cards-list"
-    sse-swap="card-added"
-    hx-swap="afterbegin"
-  >
+  <div id="cards-list" class="cards-list" sse-swap="card-added" hx-swap="afterbegin">
     <div class="empty">connecting&hellip;</div>
   </div>
 </div>
@@ -273,30 +263,10 @@ Deletes the named file from `cfg.download_dir` (same path-traversal guard as `/f
 <div id="status" class="banner">
   <div id="status-thumb" sse-swap="status-thumb" hx-swap="innerHTML"></div>
   <div class="bn-middle">
-    <div
-      class="bn-top"
-      id="status-title"
-      sse-swap="status-title"
-      hx-swap="innerHTML"
-    ></div>
-    <div
-      class="bn-log"
-      id="status-log"
-      sse-swap="status-log"
-      hx-swap="innerHTML"
-    ></div>
-    <div
-      class="bn-bar"
-      id="status-bar"
-      sse-swap="status-bar"
-      hx-swap="innerHTML"
-    ></div>
-    <div
-      class="bn-meta"
-      id="status-meta"
-      sse-swap="status-meta"
-      hx-swap="innerHTML"
-    ></div>
+    <div class="bn-top" id="status-title" sse-swap="status-title" hx-swap="innerHTML"></div>
+    <div class="bn-log" id="status-log" sse-swap="status-log" hx-swap="innerHTML"></div>
+    <div class="bn-bar" id="status-bar" sse-swap="status-bar" hx-swap="innerHTML"></div>
+    <div class="bn-meta" id="status-meta" sse-swap="status-meta" hx-swap="innerHTML"></div>
   </div>
   <div id="status-cancel" sse-swap="status-cancel" hx-swap="innerHTML"></div>
 </div>

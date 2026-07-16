@@ -1,61 +1,108 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ label }} &mdash; details</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/app.css" />
     <script src="/static/htmx.org-2.0.4.js"></script>
   </head>
   <body>
     <div class="item-page">
-
       <div class="ip-layout">
         {# ---------------- Left pane: primary thumb + actions + info + logs ---------------- #}
         <section class="ip-left">
           <div class="ip-thumb">
             {% if let Some(name) = thumb %}
-              <img src="/thumb/{{ name }}" alt="">
+            <img src="/thumb/{{ name }}" alt="" />
             {% else %}
-              <div class="ip-thumb-placeholder"></div>
+            <div class="ip-thumb-placeholder"></div>
             {% endif %}
           </div>
 
           <div class="ip-actions">
             {% if status == "done" %}{% if let Some(name) = filename %}
-              <a class="big-btn view" href="/file/{{ name|urlencode_strict }}?inline=1" target="_blank" rel="noopener">&#9654; View</a>
-              <a class="big-btn download" href="/file/{{ name|urlencode_strict }}?download=1">&#8595; Download</a>
-              <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete {{ name }} from the server?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
+            <a class="big-btn view" href="/file/{{ name|urlencode_strict }}?inline=1" target="_blank" rel="noopener">&#9654; View</a>
+            <a class="big-btn download" href="/file/{{ name|urlencode_strict }}?download=1">&#8595; Download</a>
+            <button
+              class="big-btn delete"
+              hx-post="/delete-item/{{ id }}"
+              hx-target="#item-ack"
+              hx-swap="innerHTML"
+              hx-confirm="Delete {{ name }} from the server?"
+              hx-on:after-request="if(event.detail.successful) location.href='/'"
+            >
+              &#128465; Delete
+            </button>
             {% endif %}{% else if status == "pending" || status == "active" %}
-              <button class="big-btn cancel" hx-post="/cancel/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#9632; Cancel</button>
+            <button class="big-btn cancel" hx-post="/cancel/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">
+              &#9632; Cancel
+            </button>
             {% else if status == "failed" || status == "cancelled" %}
-              <button class="big-btn retry" hx-post="/retry/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#8635; Retry</button>
-              <button class="big-btn delete" hx-post="/delete-item/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-confirm="Delete this item from the queue?" hx-on:after-request="if(event.detail.successful) location.href='/'">&#128465; Delete</button>
+            <button class="big-btn retry" hx-post="/retry/{{ id }}" hx-target="#item-ack" hx-swap="innerHTML" hx-on:after-request="if(event.detail.successful) location.reload()">&#8635; Retry</button>
+            <button
+              class="big-btn delete"
+              hx-post="/delete-item/{{ id }}"
+              hx-target="#item-ack"
+              hx-swap="innerHTML"
+              hx-confirm="Delete this item from the queue?"
+              hx-on:after-request="if(event.detail.successful) location.href='/'"
+            >
+              &#128465; Delete
+            </button>
             {% endif %}
           </div>
 
           <section class="ip-details">
             <h1 class="ip-title">{{ label }}</h1>
             <dl class="ip-meta">
-              {% if !url.is_empty() %}<dt>url</dt><dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>{% endif %}
-              <dt>status</dt><dd class="ip-status {{ status }}">{{ status }}</dd>
-              {% if !dur.is_empty() %}<dt>duration</dt><dd>{{ dur }}</dd>{% endif %}
-              {% if let Some(v) = media_video %}<dt>video</dt><dd>{{ v }}</dd>{% endif %}
-              {% if let Some(a) = media_audio %}<dt>audio</dt><dd>{{ a }}</dd>{% endif %}
-              {% if let Some(b) = media_bitrate %}<dt>bitrate</dt><dd>{{ b }}</dd>{% endif %}
-              {% if let Some(f) = media_format %}<dt>format</dt><dd>{{ f }}</dd>{% endif %}
-              {% if let Some(s) = media_size %}<dt>size</dt><dd>{{ s }}</dd>{% endif %}
-              {% if let Some(name) = filename %}<dt>file</dt><dd>{{ name }}</dd>{% endif %}
-              <dt>enqueued</dt><dd>{{ enqueued }}</dd>
+              {% if !url.is_empty() %}
+              <dt>url</dt>
+              <dd><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></dd>
+              {% endif %}
+              <dt>status</dt>
+              <dd class="ip-status {{ status }}">{{ status }}</dd>
+              {% if !dur.is_empty() %}
+              <dt>duration</dt>
+              <dd>{{ dur }}</dd>
+              {% endif %} {% if let Some(v) = media_video %}
+              <dt>video</dt>
+              <dd>{{ v }}</dd>
+              {% endif %} {% if let Some(a) = media_audio %}
+              <dt>audio</dt>
+              <dd>{{ a }}</dd>
+              {% endif %} {% if let Some(b) = media_bitrate %}
+              <dt>bitrate</dt>
+              <dd>{{ b }}</dd>
+              {% endif %} {% if let Some(f) = media_format %}
+              <dt>format</dt>
+              <dd>{{ f }}</dd>
+              {% endif %} {% if let Some(s) = media_size %}
+              <dt>size</dt>
+              <dd>{{ s }}</dd>
+              {% endif %} {% if let Some(name) = filename %}
+              <dt>file</dt>
+              <dd>{{ name }}</dd>
+              {% endif %}
+              <dt>enqueued</dt>
+              <dd>{{ enqueued }}</dd>
             </dl>
-            {% if status == "failed" %}{% if let Some(e) = error %}<div class="ip-err">{{ e }}</div>{% endif %}{% endif %}
+            {% if status == "failed" %}{% if let Some(e) = error %}
+            <div class="ip-err">{{ e }}</div>
+            {% endif %}{% endif %}
           </section>
 
           <section class="ip-logs">
             <h2 class="ip-logs-head">yt-dlp output</h2>
             <div id="ip-body" class="ip-body">
-              <div id="item-log-lines" class="ip-lines"{% if polling %} hx-get="/logs/{{ id }}?lines=1" hx-trigger="every 2s" hx-target="this" hx-swap="innerHTML"{% endif %}>{% if lines.is_empty() %}<div class="log-empty">(no output yet)</div>{% else %}{% for l in lines %}<div class="logline">{{ l }}</div>{% endfor %}{% endif %}</div>
+              <div id="item-log-lines" class="ip-lines" {% if polling %} hx-get="/logs/{{ id }}?lines=1" hx-trigger="every 2s" hx-target="this" hx-swap="innerHTML" {% endif %}>
+                {% if lines.is_empty() %}
+                <div class="log-empty">(no output yet)</div>
+                {% else %}{% for l in lines %}
+                <div class="logline">{{ l }}</div>
+                {% endfor %}{% endif %}
+              </div>
             </div>
           </section>
         </section>
@@ -63,15 +110,14 @@
         {# ---------------- Right pane: photo grid of extracted native thumbs ---------------- #}
         <aside class="ip-right">
           {% if thumbnails.is_empty() %}
-            <div class="ip-frames-empty">No frames extracted yet{% if status == "done" %}; generating&hellip;{% else %}.{% endif %}</div>
+          <div class="ip-frames-empty">No frames extracted yet{% if status == "done" %}; generating&hellip;{% else %}.{% endif %}</div>
           {% else %}
-            <div class="ip-frames">
-              {% for name in thumbnails %}<a class="ip-frame-cell" href="/thumb/{{ name }}" target="_blank" rel="noopener"><img src="/thumb/{{ name }}" alt="" loading="lazy"></a>{% endfor %}
-            </div>
+          <div class="ip-frames">
+            {% for name in thumbnails %}<a class="ip-frame-cell" href="/thumb/{{ name }}" target="_blank" rel="noopener"><img src="/thumb/{{ name }}" alt="" loading="lazy" /></a>{% endfor %}
+          </div>
           {% endif %}
         </aside>
       </div>
-
     </div>
 
     <div id="item-ack" class="ack-toast"></div>
@@ -81,12 +127,14 @@
       // confirmation into #item-ack; auto-clear after a few seconds.
       (function () {
         var timer = null;
-        document.body.addEventListener('htmx:afterSwap', function (e) {
+        document.body.addEventListener("htmx:afterSwap", function (e) {
           var target = e.detail && e.detail.target;
-          if (!target || target.id !== 'item-ack') return;
+          if (!target || target.id !== "item-ack") return;
           if (!target.textContent.trim()) return;
           clearTimeout(timer);
-          timer = setTimeout(function () { target.textContent = ''; }, 4000);
+          timer = setTimeout(function () {
+            target.textContent = "";
+          }, 4000);
         });
       })();
     </script>

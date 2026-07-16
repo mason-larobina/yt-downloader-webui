@@ -1,35 +1,35 @@
 {% if cards.is_empty() %}
-  <div class="probe-error">
-    <span class="err">{{ error_msg }}</span>
-    <button type="button" class="probe-done" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Done</button>
-  </div>
+<div class="probe-error">
+  <span class="err">{{ error_msg }}</span>
+  <button type="button" class="probe-done" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Done</button>
+</div>
 {% else %}
-  <form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML">
-    <div class="probe-actions">
-      <span class="probe-sel-actions">
-        <button type="submit" class="probe-confirm">Confirm</button>
-        <button type="button" onclick="probeSelectAll()" title="select all">all</button>
-        <button type="button" onclick="probeSelectNone()" title="deselect all">none</button>
-      </span>
-      <button type="button" class="probe-cancel" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button>
-    </div>
-    <div class="probe-cards-list">
-      {% for c in cards %}
-        <label class="probe-card">
-          <input type="checkbox" name="entry" value="{{ c.value }}" checked>
-          {% if let Some(t) = c.thumb %}
-            <img class="probe-thumb" src="{{ t }}" alt="" loading="lazy" referrerpolicy="no-referrer">
-          {% else %}
-            <div class="probe-thumb probe-thumb-placeholder"></div>
-          {% endif %}
-          <div class="probe-card-meta">
-            <div class="probe-card-title">{{ c.idx }}. {{ c.label }}</div>
-            {% if !c.dur.is_empty() %}
-              <div class="probe-card-sub"><span class="dur">{{ c.dur }}</span></div>
-            {% endif %}
-          </div>
-        </label>
-      {% endfor %}
-    </div>
-  </form>
+<form class="probe-form" hx-post="/confirm" hx-target="#header-input" hx-swap="innerHTML">
+  <div class="probe-actions">
+    <span class="probe-sel-actions">
+      <button type="submit" class="probe-confirm">Confirm</button>
+      <button type="button" onclick="probeSelectAll()" title="select all">all</button>
+      <button type="button" onclick="probeSelectNone()" title="deselect all">none</button>
+    </span>
+    <button type="button" class="probe-cancel" hx-get="/header" hx-target="#header-input" hx-swap="innerHTML">Cancel</button>
+  </div>
+  <div class="probe-cards-list">
+    {% for c in cards %}
+    <label class="probe-card">
+      <input type="checkbox" name="entry" value="{{ c.value }}" checked />
+      {% if let Some(t) = c.thumb %}
+      <img class="probe-thumb" src="{{ t }}" alt="" loading="lazy" referrerpolicy="no-referrer" />
+      {% else %}
+      <div class="probe-thumb probe-thumb-placeholder"></div>
+      {% endif %}
+      <div class="probe-card-meta">
+        <div class="probe-card-title">{{ c.idx }}. {{ c.label }}</div>
+        {% if !c.dur.is_empty() %}
+        <div class="probe-card-sub"><span class="dur">{{ c.dur }}</span></div>
+        {% endif %}
+      </div>
+    </label>
+    {% endfor %}
+  </div>
+</form>
 {% endif %}
