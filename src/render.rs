@@ -1089,7 +1089,7 @@ mod item_page_tests {
         it.logs.push("[download] 100%".into());
         let html = render_item_page(&it);
 
-        assert!(html.starts_with("<!DOCTYPE html>"), "full document");
+        assert!(html.starts_with("<!doctype html>"), "full document");
         assert!(html.contains(r#"href="/static/app.css""#), "stylesheet");
         assert!(
             html.contains(r#"<script src="/static/htmx.org-2.0.4.js">"#),
@@ -1149,7 +1149,7 @@ mod item_page_tests {
     #[test]
     fn gone_page_is_a_valid_document() {
         let html = render_item_gone();
-        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains(r#"<a class="ip-back" href="/">"#));
         assert!(html.contains("no longer in the queue"));
     }
